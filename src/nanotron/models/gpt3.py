@@ -2,6 +2,7 @@
 
 import math
 from typing import Optional
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -9,11 +10,15 @@ from torch.nn import functional as F
 
 from nanotron import distributed as dist
 from nanotron.parallel import ParallelContext
-from nanotron.config import Config, GPT3Config, ParallelismArgs
+from nanotron.config import Config, GPT3Config, ParallelismArgs, Starcoder2Config
 from nanotron.generation.generate_store import AttachableStore
+from nanotron.models import starcoder2
+from nanotron.nn.layer_norm import TritonLayerNorm
 from nanotron.models.starcoder2 import MLP as Starcoder2MLP
+from nanotron.parallel.pipeline_parallel.block import PipelineBlock
 from nanotron.models.starcoder2 import CoreAttention as Starcoder2CoreAttention
-from nanotron.models.starcoder2 import CausalSelfGQA
+from nanotron.models.starcoder2 import GPTBlock as Starcoder2GPTBlock
+from nanotron.models.starcoder2 import CausalSelfGQA, Starcoder2ForTraining, GPTModel
 from nanotron.random import RandomStates, branch_random_state
 from nanotron.parallel.pipeline_parallel.tensor_pointer import TensorPointer
 from nanotron.parallel.tensor_parallel.enum import TensorParallelLinearMode
@@ -28,8 +33,53 @@ from nanotron.parallel.tied_parameters import tie_parameters
 # - check that attention (i.e. nanotron.attn vs xglm.self_attn) is the same.
 # - from starcoder import Embedding
 # - class PositionEmbedding: my sinusoidal embedding extends from TensorParallelEmbedding
-# - class GPTBLock: very similar to starcoder2 but make it so it support non-GQA or MQA
+# - class GPTBlock: very similar to starcoder2 but make it so it support non-GQA or MQA
 # - from starcoder import Loss
+
+
+@contextmanager
+def replace_coreattention(gpt3config: GPT3Config):
+    orig = starcoder2.CoreAttention
+    try:
+        def create_core_attention(config: Starcoder2Config, parallel_config: Optional[ParallelismArgs], layer_idx: int):
+            return CoreAttention(gpt3config, parallel_config, layer_idx)
+        starcoder2.CoreAttention = create_core_attention
+        yield
+    finally:
+        starcoder2.CoreAttention = orig
+
+
+@contextmanager
+def replace_decoder(gpt3config: GPT3Config):
+    orig = starcoder2.PipelineBlock
+    try:
+        def create_pp_block(module_builder, module_kwargs, **kwargs):
+            if module_builder is Starcoder2GPTBlock:
+                # Starcoder2's GPT module is trying to instantiate a Starcoder2 GPTBlock.
+                # Let's return a PipelineBlock with a GPT3Block instead.
+                # This also requires to replace starcoders2's config with gpt3's config.
+                module_kwargs["config"] = gpt3config
+                return orig(module_builder=GPTBlock, module_kwargs=module_kwargs, **kwargs)
+            # Else, they are setting up other modules, which we also want unchanged.
+            return orig(module_builder=module_builder, module_kwargs=module_kwargs, **kwargs)
+
+        starcoder2.PipelineBlock = create_pp_block
+        yield
+    finally:
+        starcoder2.PipelineBlock = orig
+
+
+@contextmanager
+def replace_gpt3model(gpt3config: GPT3Config):
+    orig = starcoder2.GPTModel
+    try:
+        def create_gptmodel(config: Starcoder2Config, parallel_context: ParallelContext,
+                            parallel_config: Optional[ParallelismArgs], random_states: RandomStates):
+            return GPT3Model(gpt3config, parallel_context, parallel_config, random_states)
+        starcoder2.GPTModel = create_gptmodel
+        yield
+    finally:
+        starcoder2.GPTModel = orig
 
 
 class CoreAttention(Starcoder2CoreAttention):
@@ -63,7 +113,7 @@ class CoreAttention(Starcoder2CoreAttention):
             )  # [batch, q_length, q_heads, head_dim]
             attention_output = attention_output.permute(0, 2, 1, 3)
             attention_output = attention_output.reshape(batch_size*q_length, q_heads, head_dim)
-            return attention_output
+            return attention_output.contiguous()
 
         assert query_states.dtype in {torch.bfloat16, torch.float16}
         return super().forward(query_states, key_states, value_states, q_sequence_mask, kv_sequence_mask)
@@ -77,9 +127,10 @@ class CausalSelfAttention(CausalSelfGQA):
         tp_pg: dist.ProcessGroup,
         layer_idx: int,
     ):
-        super().__init__(config.as_starcoder2(), parallel_config, tp_pg, layer_idx)
+        with replace_coreattention(config):
+            super().__init__(config.as_starcoder2(), parallel_config, tp_pg, layer_idx)
         self.maybe_rotary = lambda q, k, **_: (q, k)  # Overwrite possible rotary with identity.
-        self.attention = CoreAttention(config, parallel_config=parallel_config, layer_idx=layer_idx)  # Use our custom CoreAttention.
+        #self.attention = CoreAttention(config, parallel_config=parallel_config, layer_idx=layer_idx)  # Use our custom CoreAttention.
 
 
 class MLP(Starcoder2MLP):
@@ -88,10 +139,12 @@ class MLP(Starcoder2MLP):
         config: GPT3Config,
         parallel_config: Optional[ParallelismArgs],
         tp_pg: dist.ProcessGroup,
+        random_states: RandomStates
     ):
-        # TODO: GPT3Config -> Starcoder2Config.
-        super().__init__(config, parallel_config, tp_pg)
-        self.dropout = nn.Dropout(p=config.dropout) # TODO: correct config.dropout name
+        super().__init__(config.as_starcoder2(), parallel_config, tp_pg)
+        self.dropout = nn.Dropout(p=config.act_pdrop)
+        self.random_states = random_states
+        self.tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
 
     def forward(self, hidden_states):  # [seq_length, batch_size, hidden_dim]
         hidden_states = self.c_fc(hidden_states)
@@ -113,6 +166,7 @@ class GPTBlock(nn.Module):
         random_states: RandomStates,
         layer_idx: int,
     ):
+        #print("New gpt block created :D")
         super(GPTBlock, self).__init__()
         self.ln_1 = TritonLayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
         self.attn = CausalSelfAttention(
@@ -124,7 +178,7 @@ class GPTBlock(nn.Module):
         self.attn_dropout = config.attn_pdrop
 
         self.ln_2 = TritonLayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
-        self.ff = MLP(config=config, parallel_config=parallel_config, tp_pg=tp_pg)
+        self.ff = MLP(config=config, parallel_config=parallel_config, tp_pg=tp_pg, random_states=random_states)
         self.ff_dropout = config.resid_pdrop
 
         self.random_states = random_states
@@ -138,8 +192,10 @@ class GPTBlock(nn.Module):
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
+        #hidden_states = torch.arange(hidden_states.numel()).to(hidden_states.device).to(hidden_states.dtype).view(hidden_states.size())
         output = self.attn(hidden_states=hidden_states, sequence_mask=sequence_mask)
         hidden_states = output["hidden_states"]
+        #return {"hidden_states": hidden_states, "sequence_mask": sequence_mask}
 
         if self.training:
             with branch_random_state(
@@ -227,7 +283,7 @@ class PositionEmbedding(nn.Module, AttachableStore):
         return emb
 
 
-class GPT3Model(nn.Module):
+class GPT3Model(GPTModel):
     def __init__(
             self,
             config: GPT3Config,
@@ -235,24 +291,9 @@ class GPT3Model(nn.Module):
             parallel_config: Optional[ParallelismArgs],
             random_states: RandomStates,
         ):
-        super().__init__()
+        with replace_decoder(config):
+            super().__init__(config.as_starcoder2(), parallel_context, parallel_config, random_states)
 
-        # Declare all the nodes
-        self.p2p = P2P(parallel_context.pp_pg, device=torch.device("cuda"))
-        self.random_states = random_states
-        self.tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
-
-        self.token_embeddings = PipelineBlock(
-            p2p=self.p2p,
-            module_builder=Embedding,
-            module_kwargs={
-                "tp_pg": parallel_context.tp_pg,
-                "config": config,
-                "parallel_config": parallel_config,
-            },
-            module_input_keys={"input_ids"},
-            module_output_keys={"input_embeds"},
-        )
         self.position_embeddings = PipelineBlock(
             p2p=self.p2p,
             module_builder=PositionEmbedding,
@@ -264,69 +305,7 @@ class GPT3Model(nn.Module):
             module_input_keys={"position_ids"},
             module_output_keys={"position_embeds"},
         )
-
-        self.embeds_dropout = PipelineBlock(
-            p2p=self.p2p,
-            module_builder=nn.Dropout,
-            module_kwargs={"p": config.embd_pdrop},
-            module_input_keys={"input"},
-            module_output_keys={"hidden_states"},
-        )
-
-        self.decoder = nn.ModuleList(
-            [
-                PipelineBlock(
-                    p2p=self.p2p,
-                    module_builder=GPTBlock,
-                    module_kwargs={
-                        "config": config,
-                        "parallel_config": parallel_config,
-                        "tp_pg": parallel_context.tp_pg,
-                        "random_states": random_states,
-                        "layer_idx": layer_idx,
-                    },
-                    module_input_keys={"hidden_states", "sequence_mask"},
-                    module_output_keys={"hidden_states", "sequence_mask"},
-                )
-                for layer_idx in range(config.num_hidden_layers)
-            ]
-        )
-
-        self.final_layer_norm = PipelineBlock(
-            p2p=self.p2p,
-            module_builder=TritonLayerNorm,
-            module_kwargs={"normalized_shape": config.hidden_size, "eps": config.layer_norm_epsilon},
-            module_input_keys={"input"},
-            module_output_keys={"hidden_states"},
-        )
-
-        self.lm_head = PipelineBlock(
-            p2p=self.p2p,
-            # Understand that this means that we return sharded logits that are going to need to be gathered
-            module_builder=TensorParallelColumnLinear,
-            module_kwargs={
-                "in_features": config.hidden_size,
-                "out_features": config.vocab_size,
-                "pg": parallel_context.tp_pg,
-                "bias": False,
-                # TODO: refactor so that we store that default in a single place.
-                "mode": self.tp_mode,
-                "async_communication": parallel_config.tp_linear_async_communication
-                if parallel_config is not None
-                else False,
-            },
-            module_input_keys={"x"},
-            module_output_keys={"logits"},
-        )
-
-        self.cast_to_fp32 = PipelineBlock(
-            p2p=self.p2p,
-            module_builder=lambda: lambda x: x.float(),
-            module_kwargs={},
-            module_input_keys={"x"},
-            module_output_keys={"output"},
-        )
-
+        self.embed_scale = config.hidden_size**0.5 if config.scale_embedding else 1.0
 
     def forward(
         self,
@@ -335,9 +314,9 @@ class GPT3Model(nn.Module):
     ):
         # all tensors are optional as most ranks don't need anything from the dataloader.
 
+        input_embeds = self.token_embeddings(input_ids=input_ids, input_mask=input_mask)["input_embeds"]*self.embed_scale
         position_ids = torch.arange(input_ids.size(1), device="cuda").repeat(input_ids.size(0)).view(*input_ids.size())
-        input_embeds = self.token_embeddings(input_ids=input_ids)["input_embeds"]
-        position_embeds = self.position_embeds(position_ids=position_ids)["position_embeds"]
+        position_embeds = self.position_embeddings(position_ids=position_ids)["position_embeds"]
         hidden_states = input_embeds + position_embeds
 
         with branch_random_state(
@@ -348,6 +327,7 @@ class GPT3Model(nn.Module):
         hidden_encoder_states = {"hidden_states": hidden_states, "sequence_mask": input_mask}
         for encoder_block in self.decoder:
             hidden_encoder_states = encoder_block(**hidden_encoder_states)
+        #return hidden_encoder_states["hidden_states"]
 
         hidden_states = self.final_layer_norm(input=hidden_encoder_states["hidden_states"])["hidden_states"]
 
@@ -356,3 +336,21 @@ class GPT3Model(nn.Module):
         fp32_sharded_logits = self.cast_to_fp32(x=sharded_logits)["output"]
 
         return fp32_sharded_logits
+
+
+# TODO: maybe reimplement:
+# - tie_custom_params
+# - get_embeddings_lm_head_tied_names
+# - get_block_compute_costs
+# - get_flops_per_sec
+class GPT3ForTraining(Starcoder2ForTraining):
+    def __init__(
+        self,
+        config: GPT3Config,
+        parallel_context: ParallelContext,
+        parallel_config: Optional[ParallelismArgs],
+        random_states: RandomStates,
+    ):
+        with replace_gpt3model(config):
+            super().__init__(config.as_starcoder2(), parallel_context, parallel_config, random_states)
+
