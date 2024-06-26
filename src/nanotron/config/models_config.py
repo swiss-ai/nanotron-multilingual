@@ -154,12 +154,16 @@ class GPT3Config:
     sinusoidal_position_embedding: bool = True
     position_embedding_offset: int = 2
     use_spda: bool = False
+    act_pdrop: float = 0.0
+    scale_embedding: bool = True
 
     def as_starcoder2(self) -> Starcoder2Config:
         config = dict(**vars(self))
         del config["sinusoidal_position_embedding"]
         del config["use_spda"]
         del config["position_embedding_offset"]
+        del config["act_pdrop"]
+        del config["scale_embedding"]
         return Starcoder2Config(
             grouped_query=True,
             num_kv_heads=self.num_attention_heads,
