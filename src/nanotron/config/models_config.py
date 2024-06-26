@@ -133,4 +133,40 @@ class Starcoder2Config:
         return self.intermediate_size
 
 
+@dataclass
+class GPT3Config:
+    """Configuration for a GPT3 model"""
+
+    activation_function: str = "gelu"
+    attn_pdrop: float = 0.1
+    embd_pdrop: float = 0.1
+    eos_token_id: int = 49152
+    hidden_size: int = 2048
+    intermediate_size: Optional[int] = None
+    layer_norm_epsilon: float = 1e-05
+    max_position_embeddings: int = 4096
+    num_attention_heads: int = 16
+    num_hidden_layers: int = 24
+    resid_pdrop: float = 0.1
+    scale_attention_softmax_in_fp32: bool = True
+    scale_attn_weights: bool = True
+    vocab_size: int = 49280
+    sinusoidal_position_embedding: bool = True
+    position_embedding_offset: int = 2
+    use_spda: bool = False
+
+    def as_starcoder2(self) -> Starcoder2Config:
+        config = dict(**vars(self))
+        del config["sinusoidal_position_embedding"]
+        del config["use_spda"]
+        del config["position_embedding_offset"]
+        return Starcoder2Config(
+            grouped_query=True,
+            num_kv_heads=self.num_attention_heads,
+            use_rotary_embeddings=False,
+            **config
+        )
+
+
 NanotronConfigs = Union[LlamaConfig, Starcoder2Config, Any]
+
