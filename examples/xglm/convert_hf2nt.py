@@ -1,27 +1,42 @@
+"""
+Converts a HF model to nanotron format
+Command:
+    torchrun --nproc-per-node=1 convert_hf2nt.py --checkpoint-path=hf_weights --save-path=nanotron_weights
+"""
+
+import json
+import warnings
+import dataclasses
+from argparse import ArgumentParser
+from pathlib import Path
+
 import torch
 from torch import nn
-
 from transformers.models.xglm.modeling_xglm import XGLMAttention, XGLMConfig, XGLMDecoderLayer, XGLMForCausalLM
+
+import nanotron
 from nanotron.models.gpt3 import CausalSelfAttention, GPTBlock, MLP, GPT3ForTraining
 from nanotron.config.models_config import GPT3Config
+from nanotron.trainer import mark_tied_parameters
+
 
 
 def convert_config(config: XGLMConfig) -> GPT3Config:
     # TODOs:
-    #    dropout=0.1,
     #    layerdrop=0.0,
     #    init_std=0.02,
     #    use_cache=True,
-    #    decoder_start_token_id=2,
     #    pad_token_id=1,
     #    bos_token_id=0,
-
-    # TODO: when going gpt3->xglm:
-    #  - assert layernorm is 1e-05
+    if config.dropout != config.attention_dropout:
+        warnings.warn(f"huggingface.dropout = {config.dropout} does not match with "
+                      f"huggingface.attention_dropout = {config.attention_dropout}. "
+                      "Nanotron implementation needs these two values to be equal "
+                      "for correct conversion.")
     return GPT3Config(
         activation_function=config.activation_function,
         attn_pdrop=config.attention_dropout,
-        embd_pdrop=0.0,  # TODO
+        embd_pdrop=config.dropout,
         eos_token_id=config.eos_token_id,
         hidden_size=config.d_model,
         intermediate_size=config.ffn_dim,
@@ -29,12 +44,12 @@ def convert_config(config: XGLMConfig) -> GPT3Config:
         max_position_embeddings=config.max_position_embeddings,
         num_attention_heads=config.attention_heads,
         num_hidden_layers=config.num_layers,
-        resid_pdrop=0.0,  # TODO
+        resid_pdrop=config.dropout,
         scale_attention_softmax_in_fp32=True,
         scale_attn_weights=True,
         vocab_size=config.vocab_size,
         sinusoidal_position_embedding=True,
-        position_embedding_offset=2,
+        position_embedding_offset=config.decoder_start_token_id,
         use_spda=False,
         act_pdrop=config.activation_dropout,
         scale_embedding=config.scale_embedding,
@@ -92,3 +107,56 @@ def convert(model_nt: GPT3ForTraining, model_hf: XGLMForCausalLM):
         convert_decoder(layer_nt.pp_block, layer_hf)
     convert_generic(model_nt.model.final_layer_norm.pp_block, model_hf.model.layer_norm)
     convert_generic(model_nt.model.lm_head.pp_block, model_hf.lm_head)
+
+
+def create_nt_model(model_config: GPT3Config, device: torch.device = torch.device("cuda"),
+                    dtype: torch.dtype = torch.bfloat16) -> GPT3ForTraining:
+
+    parallel_config = nanotron.config.ParallelismArgs(dp=1, pp=1, tp=1)
+    parallel_context = nanotron.parallel.ParallelContext(
+        data_parallel_size=parallel_config.dp,
+        pipeline_parallel_size=parallel_config.pp,
+        tensor_parallel_size=parallel_config.tp,
+    )
+    #random_states = nanotron.random.RandomStates({"tp_synced": nanotron.random.get_current_random_state()})
+    model_nt = nanotron.models.build_model(
+        model_builder=lambda: GPT3ForTraining(
+            config=model_config,
+            parallel_context=parallel_context,
+            parallel_config=parallel_config,
+            random_states=None,
+        ),
+        parallel_context=parallel_context,
+        dtype=dtype,
+        device=device,
+    )
+    mark_tied_parameters(model=model_nt, parallel_context=parallel_context)
+    return model_nt
+
+
+def main(hf_path: str, save_path: Path):
+    # Load hf.
+    print("Loading hf...")
+    model_hf = XGLMForCausalLM.from_pretrained(hf_path)
+
+    # Init nanotron.
+    print("Initializing nt...")
+    config_nt = convert_config(model_hf.config)
+    model_nt = create_nt_model(config_nt)
+
+    # Copy weights and save model.
+    print("Copying weights...")
+    convert(model_nt, model_hf)
+    nanotron.serialize.save_weights(model=model_nt, parallel_context=model_nt.parallel_context,
+                                    root_folder=save_path)
+    with open(save_path/"model_config.json", "w+") as f:
+        json.dump(dataclasses.asdict(config_nt), f)
+    print(f"Model saved to {save_path}")
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser(description="Convert HF weights to nanotron format")
+    parser.add_argument("--checkpoint-path", default="facebook/xglm-7.5B", help="Name or path to the huggingface checkpoint")
+    parser.add_argument("--save-path", type=Path, default="checkpoints/xglm-7.5B", help="Path to save the nanotron model")
+    args = parser.parse_args()
+    main(args.checkpoint_path, args.save_path)

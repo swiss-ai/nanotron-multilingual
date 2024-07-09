@@ -164,6 +164,8 @@ class GPT3Config:
         del config["position_embedding_offset"]
         del config["act_pdrop"]
         del config["scale_embedding"]
+        if "_is_using_mup" in config:
+            del config["_is_using_mup"]
         return Starcoder2Config(
             grouped_query=True,
             num_kv_heads=self.num_attention_heads,
@@ -171,6 +173,4 @@ class GPT3Config:
             **config
         )
 
-
-NanotronConfigs = Union[LlamaConfig, Starcoder2Config, Any]
-
+NanotronConfigs = LlamaConfig | Starcoder2Config | GPT3Config

@@ -38,7 +38,8 @@ class OptimizerFromGradientAccumulator(InheritFromOtherOptimizer):
                 **{k: v for k, v in named_param_group.items() if k != "named_params"},
                 "named_params": [
                     (name, gradient_accumulator.get_parameter_for_optimizer(name))
-                    for name, _ in named_param_group["named_params"]
+                    for name, param in named_param_group["named_params"]
+                    if param.requires_grad
                 ],
             }
             for named_param_group in named_param_groups
