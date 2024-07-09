@@ -18,23 +18,12 @@ from nanotron.models.starcoder2 import MLP as Starcoder2MLP
 from nanotron.parallel.pipeline_parallel.block import PipelineBlock
 from nanotron.models.starcoder2 import CoreAttention as Starcoder2CoreAttention
 from nanotron.models.starcoder2 import GPTBlock as Starcoder2GPTBlock
-from nanotron.models.starcoder2 import CausalSelfGQA, Starcoder2ForTraining, GPTModel
+from nanotron.models.starcoder2 import CausalSelfGQA, Starcoder2ForTraining, GPTModel, dropout_add_fused_train
 from nanotron.random import RandomStates, branch_random_state
 from nanotron.parallel.pipeline_parallel.tensor_pointer import TensorPointer
 from nanotron.parallel.tensor_parallel.enum import TensorParallelLinearMode
 from nanotron.parallel.tensor_parallel.nn import TensorParallelEmbedding
 from nanotron.parallel.tied_parameters import tie_parameters
-
-# NOTES:
-# - tie head_weight with embeddings I think.
-
-# TODO:
-# - class GPT3Config: config lol
-# - check that attention (i.e. nanotron.attn vs xglm.self_attn) is the same.
-# - from starcoder import Embedding
-# - class PositionEmbedding: my sinusoidal embedding extends from TensorParallelEmbedding
-# - class GPTBlock: very similar to starcoder2 but make it so it support non-GQA or MQA
-# - from starcoder import Loss
 
 
 @contextmanager
@@ -130,7 +119,6 @@ class CausalSelfAttention(CausalSelfGQA):
         with replace_coreattention(config):
             super().__init__(config.as_starcoder2(), parallel_config, tp_pg, layer_idx)
         self.maybe_rotary = lambda q, k, **_: (q, k)  # Overwrite possible rotary with identity.
-        #self.attention = CoreAttention(config, parallel_config=parallel_config, layer_idx=layer_idx)  # Use our custom CoreAttention.
 
 
 class MLP(Starcoder2MLP):
@@ -204,7 +192,6 @@ class GPTBlock(nn.Module):
                 hidden_states = dropout_add_fused_train(hidden_states, residual=residual, prob=self.attn_dropout)
         else:
             # No need for random state context manager
-            # TODO: add dropout scaling?
             hidden_states = hidden_states + residual
 
         residual = hidden_states
@@ -218,7 +205,6 @@ class GPTBlock(nn.Module):
                 hidden_states = dropout_add_fused_train(hidden_states, residual=residual, prob=self.ff_dropout)
         else:
             # No need for random state context manager
-            # TODO: add dropout scaling?
             hidden_states = hidden_states + residual
 
         return {
@@ -235,7 +221,7 @@ class PositionEmbedding(nn.Module, AttachableStore):
         if (config.max_position_embeddings + config.position_embedding_offset) % tp_pg.size() == 0:
             dummy_pos = 0
         else:
-            dummy_pos = tp_pg.size() - ((config.max_position_embeddings + config.position_embedding_offset) % k)
+            dummy_pos = tp_pg.size() - ((config.max_position_embeddings + config.position_embedding_offset) % tp_pg.size())
         true_max_size = config.max_position_embeddings + config.position_embedding_offset + dummy_pos
 
         if config.sinusoidal_position_embedding:
@@ -278,7 +264,7 @@ class PositionEmbedding(nn.Module, AttachableStore):
         half_dim = embedding_dim//2
         emb = math.log(10_000)/(half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, dtype=torch.int64).float() * -emb)
-        emb = (rank*block_size + torch.arange(num_embeddings, dtype=torch.int64).float().unsqueeze(1)) * emb.unsqueeze(0)
+        emb = (rank*block_size + torch.arange(block_size, dtype=torch.int64).float().unsqueeze(1)) * emb.unsqueeze(0)
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1).view(block_size, embedding_dim)
         return emb
 
@@ -315,6 +301,7 @@ class GPT3Model(GPTModel):
         # all tensors are optional as most ranks don't need anything from the dataloader.
 
         input_embeds = self.token_embeddings(input_ids=input_ids, input_mask=input_mask)["input_embeds"]*self.embed_scale
+        # TODO: position_ids could be cached.
         position_ids = torch.arange(input_ids.size(1), device="cuda").repeat(input_ids.size(0)).view(*input_ids.size())
         position_embeds = self.position_embeddings(position_ids=position_ids)["position_embeds"]
         hidden_states = input_embeds + position_embeds
@@ -339,8 +326,6 @@ class GPT3Model(GPTModel):
 
 
 # TODO: maybe reimplement:
-# - tie_custom_params
-# - get_embeddings_lm_head_tied_names
 # - get_block_compute_costs
 # - get_flops_per_sec
 class GPT3ForTraining(Starcoder2ForTraining):
