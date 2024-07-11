@@ -1,29 +1,31 @@
 from typing import Optional
 
-import numpy as np
-import torch
-import pytest
-
-from transformers import XGLMTokenizer
-from transformers.models.xglm.modeling_xglm import XGLMConfig, XGLMAttention, XGLMSinusoidalPositionalEmbedding, XGLMDecoderLayer, XGLMForCausalLM
-
 import nanotron
-from nanotron.trainer import mark_tied_parameters
+import numpy as np
+import pytest
+import torch
 from nanotron.config.models_config import GPT3Config
-from nanotron.models.gpt3 import GPT3ForTraining, CausalSelfAttention, PositionEmbedding, GPTBlock
+from nanotron.models.gpt3 import CausalSelfAttention, GPT3ForTraining, GPTBlock, PositionEmbedding
 from nanotron.parallel import ParallelContext
+from nanotron.trainer import mark_tied_parameters
+from transformers import XGLMTokenizer
+from transformers.models.xglm.modeling_xglm import (
+    XGLMAttention,
+    XGLMConfig,
+    XGLMDecoderLayer,
+    XGLMForCausalLM,
+    XGLMSinusoidalPositionalEmbedding,
+)
 
-from tests.helpers.utils import init_distributed
-
-from examples.xglm.convert_hf2nt import convert_attention, convert_config, convert_decoder, convert
+from examples.xglm.convert_hf2nt import convert, convert_attention, convert_config, convert_decoder
+from examples.xglm.convert_nt2hf import convert as convert_nt2hf
 from examples.xglm.convert_nt2hf import convert_attention as convert_attention_nt2hf
 from examples.xglm.convert_nt2hf import convert_config as convert_config_nt2hf
 from examples.xglm.convert_nt2hf import convert_decoder as convert_decoder_nt2hf
-from examples.xglm.convert_nt2hf import convert as convert_nt2hf
-
+from tests.helpers.utils import init_distributed
 
 MAX_SEQUENCE_LENGTH = 2048
-TEST_SEQUENCE_LENGTH = 128 # If we test with a very large sequence length, precision errors get more significant independent of the correct implementation.
+TEST_SEQUENCE_LENGTH = 128  # If we test with a very large sequence length, precision errors get more significant independent of the correct implementation.
 BATCH_SIZE = 4
 HIDDEN_SIZE = 1024
 DTYPE = torch.float64
@@ -45,33 +47,44 @@ CONFIG = GPT3Config(
     vocab_size=256008,
     sinusoidal_position_embedding=True,
     position_embedding_offset=2,
-    use_spda=True
+    use_spda=True,
 )
 
 
 @pytest.fixture
 def hidden_states() -> torch.Tensor:
-    return torch.randn(TEST_SEQUENCE_LENGTH, BATCH_SIZE, HIDDEN_SIZE,
-                       dtype=DTYPE)
+    return torch.randn(TEST_SEQUENCE_LENGTH, BATCH_SIZE, HIDDEN_SIZE, dtype=DTYPE)
+
 
 @pytest.fixture
 def input_mask() -> torch.Tensor:
     return torch.ones(BATCH_SIZE, TEST_SEQUENCE_LENGTH, dtype=torch.bool)
+
 
 @pytest.fixture
 def input_ids() -> torch.Tensor:
     return torch.randint(0, CONFIG.vocab_size, (BATCH_SIZE, TEST_SEQUENCE_LENGTH))
 
 
-def almost_close(t1: torch.Tensor, t2: torch.Tensor, atol: float = 1e-5, rtol: float = 0.016,
-                 max_far: float = 0.0, far_atol: float = 0.01):
-    very_close = torch.abs(t1 - t2) <= atol + rtol*torch.abs(t2)
+def almost_close(
+    t1: torch.Tensor,
+    t2: torch.Tensor,
+    atol: float = 1e-5,
+    rtol: float = 0.016,
+    max_far: float = 0.0,
+    far_atol: float = 0.01,
+):
+    very_close = torch.abs(t1 - t2) <= atol + rtol * torch.abs(t2)
     not_very_close = ~very_close
 
     if torch.all(very_close):
         return
-    assert torch.mean(not_very_close.float()) <= max_far, f"not very close found: {100*torch.mean(not_very_close.float()):.1f}%"
-    assert torch.all(torch.abs(t1[not_very_close] - t2[not_very_close]) <= far_atol), f"Worse deviation found: {torch.max(torch.abs(t1 - t2)):.4f}"
+    assert (
+        torch.mean(not_very_close.float()) <= max_far
+    ), f"not very close found: {100*torch.mean(not_very_close.float()):.1f}%"
+    assert torch.all(
+        torch.abs(t1[not_very_close] - t2[not_very_close]) <= far_atol
+    ), f"Worse deviation found: {torch.max(torch.abs(t1 - t2)):.4f}"
 
 
 def attention_mask() -> torch.Tensor:
@@ -81,9 +94,11 @@ def attention_mask() -> torch.Tensor:
     mask = mask.repeat(BATCH_SIZE, 1, 1).unsqueeze(1)
     return mask
 
+
 ##
 # FROM HERE DOWN (until next comment), all tests are hf->nt
 ##
+
 
 def _test_attention(parallel_context: ParallelContext, hidden_states: torch.Tensor, sequence_mask: torch.Tensor):
     hidden_states = hidden_states.cuda()
@@ -118,6 +133,7 @@ def _test_position_embeddings(parallel_context: ParallelContext):
     assert out_nt.size() == out_hf.size(), f"{out_nt.size()}, {out_hf.size()}"
     torch.testing.assert_close(out_nt, out_hf)
 
+
 def test_position_embeddings():
     init_distributed(tp=1, dp=1, pp=1)(_test_position_embeddings)()
 
@@ -140,15 +156,21 @@ def _test_decoder(parallel_context: ParallelContext, hidden_states: torch.Tensor
     out_hf = decoder_hf(hidden_states.permute(1, 0, 2), attention_mask=attention_mask())[0].permute(1, 0, 2)
 
     assert out_nt.size() == out_hf.size(), f"{out_nt.size()}, {out_hf.size()}"
-    torch.testing.assert_close(out_nt.bfloat16(), out_hf.bfloat16())  # We cast to bf16 to get more relaxed constraints.
+    torch.testing.assert_close(
+        out_nt.bfloat16(), out_hf.bfloat16()
+    )  # We cast to bf16 to get more relaxed constraints.
 
 
 def test_decoder(hidden_states: torch.Tensor, input_mask: torch.Tensor):
     init_distributed(tp=1, dp=1, pp=1)(_test_decoder)(hidden_states=hidden_states, sequence_mask=input_mask)
 
 
-def _test_model(model_hf: Optional[XGLMForCausalLM], parallel_context: ParallelContext,
-                input_ids: torch.Tensor, input_mask: torch.Tensor):
+def _test_model(
+    model_hf: Optional[XGLMForCausalLM],
+    parallel_context: ParallelContext,
+    input_ids: torch.Tensor,
+    input_mask: torch.Tensor,
+):
 
     random_states = nanotron.random.RandomStates({"tp_synced": nanotron.random.get_current_random_state()})
     input_ids = input_ids.cuda()
@@ -182,7 +204,7 @@ def _test_model(model_hf: Optional[XGLMForCausalLM], parallel_context: ParallelC
     ).eval()
     convert(model_nt, model_hf)
 
-    print("Parameter count (M):", sum(map(torch.numel, model_hf.parameters()))/1000/1000)
+    print("Parameter count (M):", sum(map(torch.numel, model_hf.parameters())) / 1000 / 1000)
 
     # Get outputs and assert.
     with torch.no_grad():
@@ -209,8 +231,9 @@ def _test_xglm500M(parallel_context: ParallelContext):
     tok = XGLMTokenizer.from_pretrained("facebook/xglm-564M")
     tokenized = tok(TEXT)
     model_hf = XGLMForCausalLM.from_pretrained("facebook/xglm-564M")
-    out_nt, out_hf = _test_model(model_hf, parallel_context,
-                                 torch.tensor([tokenized["input_ids"]]), torch.tensor([tokenized["attention_mask"]]))
+    out_nt, out_hf = _test_model(
+        model_hf, parallel_context, torch.tensor([tokenized["input_ids"]]), torch.tensor([tokenized["attention_mask"]])
+    )
     almost_close(out_nt, out_hf, max_far=0.1, far_atol=0.05)
 
 
@@ -222,8 +245,9 @@ def _test_xglm7B(parallel_context: ParallelContext):
     tok = XGLMTokenizer.from_pretrained("facebook/xglm-7.5B")
     tokenized = tok(TEXT)
     model_hf = XGLMForCausalLM.from_pretrained("facebook/xglm-7.5B")
-    out_nt, out_hf = _test_model(model_hf, parallel_context,
-                                 torch.tensor([tokenized["input_ids"]]), torch.tensor([tokenized["attention_mask"]]))
+    out_nt, out_hf = _test_model(
+        model_hf, parallel_context, torch.tensor([tokenized["input_ids"]]), torch.tensor([tokenized["attention_mask"]])
+    )
     almost_close(out_nt, out_hf, max_far=0.15, far_atol=0.1)
 
 
@@ -234,6 +258,7 @@ def test_xglm7B():
 ##
 # From here down we test nt->hf converters
 ##
+
 
 def _test_nt2hf_attention(parallel_context: ParallelContext, hidden_states: torch.Tensor, sequence_mask: torch.Tensor):
     hidden_states = hidden_states.cuda()
@@ -269,7 +294,9 @@ def _test_nt2hf_decoder(parallel_context: ParallelContext, hidden_states: torch.
     out_hf = decoder_hf(hidden_states.permute(1, 0, 2), attention_mask=attention_mask())[0].permute(1, 0, 2)
 
     assert out_nt.size() == out_hf.size(), f"{out_nt.size()}, {out_hf.size()}"
-    torch.testing.assert_close(out_nt.bfloat16(), out_hf.bfloat16())  # We cast to bf16 to get more relaxed constraints.
+    torch.testing.assert_close(
+        out_nt.bfloat16(), out_hf.bfloat16()
+    )  # We cast to bf16 to get more relaxed constraints.
 
 
 def test_nt2hf_decoder(hidden_states: torch.Tensor, input_mask: torch.Tensor):

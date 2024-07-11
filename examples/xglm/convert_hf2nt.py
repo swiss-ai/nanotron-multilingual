@@ -4,20 +4,18 @@ Command:
     torchrun --nproc-per-node=1 convert_hf2nt.py --checkpoint-path=hf_weights --save-path=nanotron_weights
 """
 
+import dataclasses
 import json
 import warnings
-import dataclasses
 from argparse import ArgumentParser
 from pathlib import Path
 
+import nanotron
 import torch
-from torch import nn
+from nanotron.config.models_config import GPT3Config
+from nanotron.models.gpt3 import MLP, CausalSelfAttention, GPT3ForTraining, GPTBlock
 from transformers.models.xglm.modeling_xglm import XGLMAttention, XGLMConfig, XGLMDecoderLayer, XGLMForCausalLM
 
-import nanotron
-from nanotron.models.gpt3 import CausalSelfAttention, GPTBlock, MLP, GPT3ForTraining
-from nanotron.config.models_config import GPT3Config
-from nanotron.trainer import mark_tied_parameters
 from examples.xglm.convert_utils import convert_generic, create_nt_model
 
 
@@ -29,10 +27,12 @@ def convert_config(config: XGLMConfig) -> GPT3Config:
     #    pad_token_id=1,
     #    bos_token_id=0,
     if config.dropout != config.attention_dropout:
-        warnings.warn(f"huggingface.dropout = {config.dropout} does not match with "
-                      f"huggingface.attention_dropout = {config.attention_dropout}. "
-                      "Nanotron implementation needs these two values to be equal "
-                      "for correct conversion.")
+        warnings.warn(
+            f"huggingface.dropout = {config.dropout} does not match with "
+            f"huggingface.attention_dropout = {config.attention_dropout}. "
+            "Nanotron implementation needs these two values to be equal "
+            "for correct conversion."
+        )
     return GPT3Config(
         activation_function=config.activation_function,
         attn_pdrop=config.attention_dropout,
@@ -113,16 +113,19 @@ def main(hf_path: str, save_path: Path):
     # Copy weights and save model.
     print("Copying weights...")
     convert(model_nt, model_hf)
-    nanotron.serialize.save_weights(model=model_nt, parallel_context=model_nt.parallel_context,
-                                    root_folder=save_path)
-    with open(save_path/"model_config.json", "w+") as f:
+    nanotron.serialize.save_weights(model=model_nt, parallel_context=model_nt.parallel_context, root_folder=save_path)
+    with open(save_path / "model_config.json", "w+") as f:
         json.dump(dataclasses.asdict(config_nt), f)
     print(f"Model saved to {save_path}")
 
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Convert HF weights to nanotron format")
-    parser.add_argument("--checkpoint-path", default="facebook/xglm-7.5B", help="Name or path to the huggingface checkpoint")
-    parser.add_argument("--save-path", type=Path, default="checkpoints/xglm-7.5B", help="Path to save the nanotron model")
+    parser.add_argument(
+        "--checkpoint-path", default="facebook/xglm-7.5B", help="Name or path to the huggingface checkpoint"
+    )
+    parser.add_argument(
+        "--save-path", type=Path, default="checkpoints/xglm-7.5B", help="Path to save the nanotron model"
+    )
     args = parser.parse_args()
     main(args.checkpoint_path, args.save_path)
