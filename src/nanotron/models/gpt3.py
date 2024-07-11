@@ -338,4 +338,4 @@ class GPT3ForTraining(Starcoder2ForTraining):
     ):
         with replace_gpt3model(config):
             super().__init__(config.as_starcoder2(), parallel_context, parallel_config, random_states)
-
+        self.config = config

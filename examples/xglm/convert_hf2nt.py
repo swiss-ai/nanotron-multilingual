@@ -18,11 +18,11 @@ import nanotron
 from nanotron.models.gpt3 import CausalSelfAttention, GPTBlock, MLP, GPT3ForTraining
 from nanotron.config.models_config import GPT3Config
 from nanotron.trainer import mark_tied_parameters
-
+from examples.xglm.convert_utils import convert_generic, create_nt_model
 
 
 def convert_config(config: XGLMConfig) -> GPT3Config:
-    # TODOs:
+    # These settings seem to be unused:
     #    layerdrop=0.0,
     #    init_std=0.02,
     #    use_cache=True,
@@ -80,15 +80,6 @@ def convert_attention(attn_nt: CausalSelfAttention, attn_hf: XGLMAttention):
         attn_nt.dense.bias.data = attn_hf.out_proj.bias.clone()
 
 
-def convert_generic(module1: nn.Module, module2: nn.Module):
-    names1 = {name for name, _ in module1.named_parameters()}
-    names2 = {name for name, _ in module2.named_parameters()}
-    assert names1 == names2, f"{names1} != {names2}"
-    params2 = dict(module2.named_parameters())
-    for name, param in module1.named_parameters():
-        param.data = params2[name].clone()
-
-
 def convert_mlp(mlp_nt: MLP, block_hf: XGLMDecoderLayer):
     convert_generic(mlp_nt.c_fc, block_hf.fc1)
     convert_generic(mlp_nt.c_proj, block_hf.fc2)
@@ -107,31 +98,6 @@ def convert(model_nt: GPT3ForTraining, model_hf: XGLMForCausalLM):
         convert_decoder(layer_nt.pp_block, layer_hf)
     convert_generic(model_nt.model.final_layer_norm.pp_block, model_hf.model.layer_norm)
     convert_generic(model_nt.model.lm_head.pp_block, model_hf.lm_head)
-
-
-def create_nt_model(model_config: GPT3Config, device: torch.device = torch.device("cuda"),
-                    dtype: torch.dtype = torch.bfloat16) -> GPT3ForTraining:
-
-    parallel_config = nanotron.config.ParallelismArgs(dp=1, pp=1, tp=1)
-    parallel_context = nanotron.parallel.ParallelContext(
-        data_parallel_size=parallel_config.dp,
-        pipeline_parallel_size=parallel_config.pp,
-        tensor_parallel_size=parallel_config.tp,
-    )
-    #random_states = nanotron.random.RandomStates({"tp_synced": nanotron.random.get_current_random_state()})
-    model_nt = nanotron.models.build_model(
-        model_builder=lambda: GPT3ForTraining(
-            config=model_config,
-            parallel_context=parallel_context,
-            parallel_config=parallel_config,
-            random_states=None,
-        ),
-        parallel_context=parallel_context,
-        dtype=dtype,
-        device=device,
-    )
-    mark_tied_parameters(model=model_nt, parallel_context=parallel_context)
-    return model_nt
 
 
 def main(hf_path: str, save_path: Path):
