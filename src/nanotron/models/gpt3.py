@@ -1,37 +1,40 @@
 """PyTorch GPT-3 model."""
 
 import math
-from typing import Optional
 from contextlib import contextmanager
+from typing import Optional
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
 from nanotron import distributed as dist
-from nanotron.parallel import ParallelContext
-from nanotron.config import Config, GPT3Config, ParallelismArgs, Starcoder2Config
+from nanotron.config import GPT3Config, ParallelismArgs, Starcoder2Config
 from nanotron.generation.generate_store import AttachableStore
 from nanotron.models import starcoder2
-from nanotron.nn.layer_norm import TritonLayerNorm
 from nanotron.models.starcoder2 import MLP as Starcoder2MLP
-from nanotron.parallel.pipeline_parallel.block import PipelineBlock
+from nanotron.models.starcoder2 import CausalSelfGQA, GPTModel, Starcoder2ForTraining, dropout_add_fused_train
 from nanotron.models.starcoder2 import CoreAttention as Starcoder2CoreAttention
 from nanotron.models.starcoder2 import GPTBlock as Starcoder2GPTBlock
-from nanotron.models.starcoder2 import CausalSelfGQA, Starcoder2ForTraining, GPTModel, dropout_add_fused_train
-from nanotron.random import RandomStates, branch_random_state
+from nanotron.nn.layer_norm import TritonLayerNorm
+from nanotron.parallel import ParallelContext
+from nanotron.parallel.pipeline_parallel.block import PipelineBlock
 from nanotron.parallel.pipeline_parallel.tensor_pointer import TensorPointer
 from nanotron.parallel.tensor_parallel.enum import TensorParallelLinearMode
 from nanotron.parallel.tensor_parallel.nn import TensorParallelEmbedding
-from nanotron.parallel.tied_parameters import tie_parameters
+from nanotron.random import RandomStates, branch_random_state
 
 
 @contextmanager
 def replace_coreattention(gpt3config: GPT3Config):
     orig = starcoder2.CoreAttention
     try:
-        def create_core_attention(config: Starcoder2Config, parallel_config: Optional[ParallelismArgs], layer_idx: int):
+
+        def create_core_attention(
+            config: Starcoder2Config, parallel_config: Optional[ParallelismArgs], layer_idx: int
+        ):
             return CoreAttention(gpt3config, parallel_config, layer_idx)
+
         starcoder2.CoreAttention = create_core_attention
         yield
     finally:
@@ -42,6 +45,7 @@ def replace_coreattention(gpt3config: GPT3Config):
 def replace_decoder(gpt3config: GPT3Config):
     orig = starcoder2.PipelineBlock
     try:
+
         def create_pp_block(module_builder, module_kwargs, **kwargs):
             if module_builder is Starcoder2GPTBlock:
                 # Starcoder2's GPT module is trying to instantiate a Starcoder2 GPTBlock.
@@ -62,9 +66,15 @@ def replace_decoder(gpt3config: GPT3Config):
 def replace_gpt3model(gpt3config: GPT3Config):
     orig = starcoder2.GPTModel
     try:
-        def create_gptmodel(config: Starcoder2Config, parallel_context: ParallelContext,
-                            parallel_config: Optional[ParallelismArgs], random_states: RandomStates):
+
+        def create_gptmodel(
+            config: Starcoder2Config,
+            parallel_context: ParallelContext,
+            parallel_config: Optional[ParallelismArgs],
+            random_states: RandomStates,
+        ):
             return GPT3Model(gpt3config, parallel_context, parallel_config, random_states)
+
         starcoder2.GPTModel = create_gptmodel
         yield
     finally:
@@ -76,7 +86,8 @@ class CoreAttention(Starcoder2CoreAttention):
         super().__init__(config.as_starcoder2(), parallel_config, layer_idx)
         self.gpt3config = config
 
-    def forward(self, 
+    def forward(
+        self,
         query_states: torch.Tensor,  # [batch_size * q_length, q_heads, inner_dim]
         key_states: torch.Tensor,  # [batch_size * kv_length, kv_heads, inner_dim]
         value_states: torch.Tensor,  # [batch_size * kv_length, kv_heads, inner_dim]
@@ -101,7 +112,7 @@ class CoreAttention(Starcoder2CoreAttention):
                 is_causal=True,
             )  # [batch, q_length, q_heads, head_dim]
             attention_output = attention_output.permute(0, 2, 1, 3)
-            attention_output = attention_output.reshape(batch_size*q_length, q_heads, head_dim)
+            attention_output = attention_output.reshape(batch_size * q_length, q_heads, head_dim)
             return attention_output.contiguous()
 
         assert query_states.dtype in {torch.bfloat16, torch.float16}
@@ -127,7 +138,7 @@ class MLP(Starcoder2MLP):
         config: GPT3Config,
         parallel_config: Optional[ParallelismArgs],
         tp_pg: dist.ProcessGroup,
-        random_states: RandomStates
+        random_states: RandomStates,
     ):
         super().__init__(config.as_starcoder2(), parallel_config, tp_pg)
         self.dropout = nn.Dropout(p=config.act_pdrop)
@@ -154,14 +165,11 @@ class GPTBlock(nn.Module):
         random_states: RandomStates,
         layer_idx: int,
     ):
-        #print("New gpt block created :D")
+        # print("New gpt block created :D")
         super(GPTBlock, self).__init__()
         self.ln_1 = TritonLayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
         self.attn = CausalSelfAttention(
-            config=config,
-            parallel_config=parallel_config,
-            tp_pg=tp_pg,
-            layer_idx=layer_idx
+            config=config, parallel_config=parallel_config, tp_pg=tp_pg, layer_idx=layer_idx
         )
         self.attn_dropout = config.attn_pdrop
 
@@ -180,10 +188,10 @@ class GPTBlock(nn.Module):
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        #hidden_states = torch.arange(hidden_states.numel()).to(hidden_states.device).to(hidden_states.dtype).view(hidden_states.size())
+        # hidden_states = torch.arange(hidden_states.numel()).to(hidden_states.device).to(hidden_states.dtype).view(hidden_states.size())
         output = self.attn(hidden_states=hidden_states, sequence_mask=sequence_mask)
         hidden_states = output["hidden_states"]
-        #return {"hidden_states": hidden_states, "sequence_mask": sequence_mask}
+        # return {"hidden_states": hidden_states, "sequence_mask": sequence_mask}
 
         if self.training:
             with branch_random_state(
@@ -221,7 +229,9 @@ class PositionEmbedding(nn.Module, AttachableStore):
         if (config.max_position_embeddings + config.position_embedding_offset) % tp_pg.size() == 0:
             dummy_pos = 0
         else:
-            dummy_pos = tp_pg.size() - ((config.max_position_embeddings + config.position_embedding_offset) % tp_pg.size())
+            dummy_pos = tp_pg.size() - (
+                (config.max_position_embeddings + config.position_embedding_offset) % tp_pg.size()
+            )
         true_max_size = config.max_position_embeddings + config.position_embedding_offset + dummy_pos
 
         if config.sinusoidal_position_embedding:
@@ -234,7 +244,7 @@ class PositionEmbedding(nn.Module, AttachableStore):
             embedding_dim=config.hidden_size,
             pg=tp_pg,
             mode=parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE,
-            _weight=weight
+            _weight=weight,
         )
         self.pg = tp_pg
 
@@ -251,32 +261,31 @@ class PositionEmbedding(nn.Module, AttachableStore):
         position_embeds = self.position_embedding(position_ids + self.config.position_embedding_offset)
         return {"position_embeds": position_embeds}
 
-    def _make_weights(self, tp_pg: dist.ProcessGroup, num_embeddings: int,
-                      embedding_dim: int) -> torch.Tensor:
+    def _make_weights(self, tp_pg: dist.ProcessGroup, num_embeddings: int, embedding_dim: int) -> torch.Tensor:
         rank = dist.get_rank(group=tp_pg)
         tp_size = tp_pg.size()
 
         assert 0 <= rank < tp_size
         assert num_embeddings % tp_size == 0
         assert embedding_dim % 2 == 0
-        block_size = num_embeddings//tp_size
+        block_size = num_embeddings // tp_size
 
-        half_dim = embedding_dim//2
-        emb = math.log(10_000)/(half_dim - 1)
+        half_dim = embedding_dim // 2
+        emb = math.log(10_000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, dtype=torch.int64).float() * -emb)
-        emb = (rank*block_size + torch.arange(block_size, dtype=torch.int64).float().unsqueeze(1)) * emb.unsqueeze(0)
+        emb = (rank * block_size + torch.arange(block_size, dtype=torch.int64).float().unsqueeze(1)) * emb.unsqueeze(0)
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1).view(block_size, embedding_dim)
         return emb
 
 
 class GPT3Model(GPTModel):
     def __init__(
-            self,
-            config: GPT3Config,
-            parallel_context: ParallelContext,
-            parallel_config: Optional[ParallelismArgs],
-            random_states: RandomStates,
-        ):
+        self,
+        config: GPT3Config,
+        parallel_context: ParallelContext,
+        parallel_config: Optional[ParallelismArgs],
+        random_states: RandomStates,
+    ):
         with replace_decoder(config):
             super().__init__(config.as_starcoder2(), parallel_context, parallel_config, random_states)
 
@@ -300,7 +309,9 @@ class GPT3Model(GPTModel):
     ):
         # all tensors are optional as most ranks don't need anything from the dataloader.
 
-        input_embeds = self.token_embeddings(input_ids=input_ids, input_mask=input_mask)["input_embeds"]*self.embed_scale
+        input_embeds = (
+            self.token_embeddings(input_ids=input_ids, input_mask=input_mask)["input_embeds"] * self.embed_scale
+        )
         # TODO: position_ids could be cached.
         position_ids = torch.arange(input_ids.size(1), device="cuda").repeat(input_ids.size(0)).view(*input_ids.size())
         position_embeds = self.position_embeddings(position_ids=position_ids)["position_embeds"]
@@ -314,7 +325,7 @@ class GPT3Model(GPTModel):
         hidden_encoder_states = {"hidden_states": hidden_states, "sequence_mask": input_mask}
         for encoder_block in self.decoder:
             hidden_encoder_states = encoder_block(**hidden_encoder_states)
-        #return hidden_encoder_states["hidden_states"]
+        # return hidden_encoder_states["hidden_states"]
 
         hidden_states = self.final_layer_norm(input=hidden_encoder_states["hidden_states"])["hidden_states"]
 

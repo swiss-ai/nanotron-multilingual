@@ -2,13 +2,12 @@ import json
 from pathlib import Path
 from typing import Optional
 
-import torch
-from torch import nn
-
 import nanotron
-from nanotron.models.gpt3 import GPT3ForTraining
+import torch
 from nanotron.config.models_config import GPT3Config
+from nanotron.models.gpt3 import GPT3ForTraining
 from nanotron.trainer import mark_tied_parameters
+from torch import nn
 
 
 def convert_generic(module1: nn.Module, module2: nn.Module):
@@ -21,11 +20,11 @@ def convert_generic(module1: nn.Module, module2: nn.Module):
 
 
 def create_nt_model(
-        model_config: Optional[GPT3Config] = None,
-        device: torch.device = torch.device("cuda"),
-        dtype: torch.dtype = torch.bfloat16,
-        checkpoint_path: Optional[Path] = None
-    ):
+    model_config: Optional[GPT3Config] = None,
+    device: torch.device = torch.device("cuda"),
+    dtype: torch.dtype = torch.bfloat16,
+    checkpoint_path: Optional[Path] = None,
+):
 
     if model_config is None:
         assert checkpoint_path is not None
@@ -52,8 +51,6 @@ def create_nt_model(
     mark_tied_parameters(model=model_nt, parallel_context=parallel_context)
 
     if checkpoint_path is not None:
-        nanotron.serialize.load_weights(
-            model=model_nt, parallel_context=parallel_context, root_folder=checkpoint_path
-        )
+        nanotron.serialize.load_weights(model=model_nt, parallel_context=parallel_context, root_folder=checkpoint_path)
 
     return model_nt
