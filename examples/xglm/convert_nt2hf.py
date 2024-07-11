@@ -4,25 +4,28 @@ Command:
     torchrun --nproc-per-node=1 convert_nt2hf.py --checkpoint-path=nanotron_weights --save-path=hf_weights
 """
 
+import warnings
 from argparse import ArgumentParser
-from typing import Optional
 from pathlib import Path
+from typing import Optional
 
 import torch
+from nanotron.config.models_config import GPT3Config
+from nanotron.models.gpt3 import GPT3ForTraining, GPTBlock
 from transformers import AutoTokenizer
 from transformers.models.xglm.modeling_xglm import XGLMAttention, XGLMConfig, XGLMDecoderLayer, XGLMForCausalLM
 
-from nanotron.config.models_config import GPT3Config
-from nanotron.models.gpt3 import CausalSelfAttention, GPTBlock, MLP, GPT3ForTraining
 from examples.xglm.convert_utils import convert_generic, create_nt_model
 
 
 def convert_config(config: GPT3Config) -> XGLMConfig:
     if config.embd_pdrop != config.resid_pdrop:
-        warnings.warn(f"nanotron.embd_pdrop = {config.embd_pdrop} does not match with "
-                      f"nanotron.resid_pdrop = {config.resid_pdrop}. "
-                      "XGLM implementation needs these two values to be equal "
-                      "for correct conversion.")
+        warnings.warn(
+            f"nanotron.embd_pdrop = {config.embd_pdrop} does not match with "
+            f"nanotron.resid_pdrop = {config.resid_pdrop}. "
+            "XGLM implementation needs these two values to be equal "
+            "for correct conversion."
+        )
     if config.layer_norm_epsilon != 1e-5:
         warnings.warn(f"nanotron.layer_norm_epsilon must be 1e-5, not {config.layer_norm_epsilon}")
     return XGLMConfig(
@@ -70,7 +73,7 @@ def convert_attention(attn_hf: XGLMAttention, attn_nt: XGLMAttention):
     q_b = torch.cat(qs_b)
     k_b = torch.cat(ks_b)
     v_b = torch.cat(vs_b)
-    
+
     with torch.no_grad():
         attn_hf.q_proj.weight.data = q_w.clone()
         attn_hf.k_proj.weight.data = k_w.clone()
@@ -118,9 +121,12 @@ def main(checkpoint_path: Path, save_path: Path, tokenizer_name: Optional[str]):
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Convert HF weights to nanotron format")
-    parser.add_argument("--checkpoint-path", type=Path, default="checkpoints/xglm-7.5B", help="Path to the nanotron checkpoint")
-    parser.add_argument("--save-path", type=Path, default="facebook/xglm-7.5B", help="Path to save the huggingface model")
+    parser.add_argument(
+        "--checkpoint-path", type=Path, default="checkpoints/xglm-7.5B", help="Path to the nanotron checkpoint"
+    )
+    parser.add_argument(
+        "--save-path", type=Path, default="facebook/xglm-7.5B", help="Path to save the huggingface model"
+    )
     parser.add_argument("--tokenizer-name", type=str, default="facebook/xglm-7.5B")
     args = parser.parse_args()
     main(args.checkpoint_path, args.save_path, args.tokenizer_name)
-
