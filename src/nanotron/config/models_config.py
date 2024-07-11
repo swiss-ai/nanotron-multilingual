@@ -173,4 +173,8 @@ class GPT3Config:
             **config
         )
 
+    @property
+    def n_inner(self):
+        return self.intermediate_size
+
 NanotronConfigs = LlamaConfig | Starcoder2Config | GPT3Config
