@@ -132,7 +132,7 @@ class MultilingualNanosetDatasetsArgs:
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs]
+    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs, MultilingualNanosetDatasetsArgs]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 

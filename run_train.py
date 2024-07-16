@@ -195,6 +195,7 @@ def get_dataloader_from_data_stage(
                 token_size=token_size,
                 train_split_num_samples=trainer.config.tokens.train_steps * trainer.global_batch_size,
                 valid_split_num_samples=trainer.config.tokens.limit_val_batches * trainer.global_batch_size,
+                dataset_tokens=data.dataset.dataset_tokens,
                 random_seed=data.seed,
             )
 
@@ -229,7 +230,7 @@ def get_valid_dataloader_from_data_stage(
     input_pp_rank, output_pp_rank = get_input_output_pp_ranks(model=trainer.model)
 
     # Only support Validation with MultilingualNanosets
-    if isinstance(data.dataset, NanosetDatasetsArgs):
+    if isinstance(data.dataset, MultilingualNanosetDatasetsArgs):
         # Get tokenizer cardinality
         tokenizer = AutoTokenizer.from_pretrained(trainer.config.tokenizer.tokenizer_name_or_path)
         token_size = 4 if len(tokenizer) > np.iinfo(np.uint16).max + 1 else 2
@@ -245,6 +246,7 @@ def get_valid_dataloader_from_data_stage(
                 token_size=token_size,
                 train_split_num_samples=trainer.config.tokens.train_steps * trainer.global_batch_size,
                 valid_split_num_samples=valid_split_num_samples,
+                dataset_tokens=data.dataset.dataset_tokens,
                 is_valid=True,
                 random_seed=data.seed,
             )
@@ -320,7 +322,7 @@ def get_valid_dataloader(trainer: DistributedTrainer) -> Dict[str, DataLoader]:
         valid_split_num_samples = trainer.config.tokens.limit_val_batches * trainer.global_batch_size
 
         log_rank(
-            f"[Training Plan] Stage {stage.name} has {valid_split_num_samples} samples in the validation set",
+            f"[Validation Plan] Stage {stage.name} has {valid_split_num_samples} samples in the validation set",
             logger=logger,
             level=logging.INFO,
             rank=0,
