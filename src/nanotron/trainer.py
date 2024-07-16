@@ -394,7 +394,10 @@ class DistributedTrainer:
 
     def train(
         self,
-        dataloader_or_dls: Dict[
+        train_dataloader_or_dls: Dict[
+            str, Union[Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]], Tuple[Iterator, ...]]
+        ],
+        valid_dataloader_or_dls: Dict[
             str, Union[Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]], Tuple[Iterator, ...]]
         ],
         **kwargs,
@@ -425,7 +428,7 @@ class DistributedTrainer:
                     prof.step()
 
                 self.iteration_start_time = time.time()
-                self._update_dataloader_based_on_training_stages(dataloader_or_dls)
+                self._update_dataloader_based_on_training_stages(train_dataloader_or_dls)
 
                 # Training step
                 outputs, loss_avg = self.training_step(dataloader=self.current_dataloader)
