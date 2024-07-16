@@ -7,7 +7,7 @@ checkpoints:
 data_stages:
 - data:
     dataset:
-      dataset_folder: datasets/c4-es/tokenized
+      dataset_folder: /mloscratch/homes/solergib/nanotrove/nanotron/datasets/c4-es/tokenized
       dataset_tokens:
       - 15
     num_loading_workers: 1
@@ -17,8 +17,8 @@ data_stages:
 - data:
     dataset:
       dataset_folder:
-      - datasets/SlimPajama-6B/tokenized
-      - datasets/c4-es/tokenized
+      - /mloscratch/homes/solergib/nanotrove/nanotron/datasets/SlimPajama-6B/tokenized
+      - /mloscratch/homes/solergib/nanotrove/nanotron/datasets/c4-es/tokenized
       dataset_tokens:
       - 16
       - 15
@@ -29,8 +29,8 @@ data_stages:
 - data:
     dataset:
       dataset_folder:
-        datasets/SlimPajama-6B/tokenized: 0.8
-        datasets/c4-es/tokenized: 0.2
+        /mloscratch/homes/solergib/nanotrove/nanotron/datasets/SlimPajama-6B/tokenized: 0.8
+        /mloscratch/homes/solergib/nanotrove/nanotron/datasets/c4-es/tokenized: 0.2
       dataset_tokens:
       - 16
       - 15
@@ -65,7 +65,7 @@ model:
     initializer_range: 0.02
     intermediate_size: 11008
     is_llama_config: true
-    max_position_embeddings: 4096
+    max_position_embeddings: 1024
     num_hidden_layers: 32
     num_attention_heads: 32
     num_key_value_heads: 8
@@ -108,7 +108,7 @@ parallelism:
 profiler: null
 tokenizer:
   tokenizer_max_length: null
-  tokenizer_name_or_path: meta-llama/Meta-Llama-3-8B
+  tokenizer_name_or_path: gpt2
   tokenizer_revision: null
 tokens:
   batch_accumulation_per_replica: 1
