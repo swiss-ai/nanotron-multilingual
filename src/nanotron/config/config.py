@@ -108,6 +108,27 @@ class NanosetDatasetsArgs:
 
 
 @dataclass
+class MultilingualNanosetDatasetsArgs:
+    dataset_folder: Union[str, dict, List[str]]
+    dataset_tokens: List[
+        int
+    ]  # Set token for each language previously defined. We use a List and not a dict because this way we support specifyng weights (dict) or not (List[str])
+
+    def __post_init__(self):
+        if isinstance(self.dataset_folder, str):  # Case 1: 1 Dataset file
+            self.dataset_folder = [self.dataset_folder]
+            self.dataset_weights = [1]
+        elif isinstance(self.dataset_folder, List):  # Case 2: > 1 Dataset file
+            self.dataset_weights = None  # Set to None so we consume all the samples randomly
+        elif isinstance(self.dataset_folder, dict):  # Case 3: dict with > 1 dataset_folder and weights
+            tmp_dataset_folder = self.dataset_folder.copy()
+            self.dataset_folder = list(tmp_dataset_folder.keys())
+            self.dataset_weights = list(tmp_dataset_folder.values())
+
+        assert len(self.dataset_folder) == len(self.dataset_tokens)
+
+
+@dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
