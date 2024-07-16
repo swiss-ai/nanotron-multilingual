@@ -1,5 +1,6 @@
 import os
 import warnings
+from math import ceil
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
@@ -80,11 +81,13 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         ), f"Specified {len(self.dataset_weights)} weights but {len(dataset_folders)} datasets were provided."
         ## Build dataset index and dataset sample index
         ### Split dataset_lengths into train_dataset_lenghts & valid_dataset_lenghts
-        self.valid_dataset_lenghts = self.dataset_weights * valid_split_num_samples
+        self.valid_dataset_lenghts = [
+            ceil(weight * valid_split_num_samples) for weight in self.dataset_weights
+        ]  # Better not tu use numpy so we don't get overflow issues
         # Assert that we have sufficient samples to build the valid split
         for ds_index in range(len(self.dataset_lengths)):
             assert (
-                self.valid_dataset_lenghts[ds_index] > self.dataset_lengths[ds_index]
+                self.dataset_lengths[ds_index] > self.valid_dataset_lenghts[ds_index]
             ), f"Trying to build validation dataset with {self.valid_dataset_lenghts[ds_index]} samples but {dataset_folders[ds_index]} just have {self.dataset_lengths[ds_index]} samples."
         self.train_dataset_lenghts = [
             a - b for a, b in zip(self.dataset_lengths, self.valid_dataset_lenghts)
@@ -132,7 +135,7 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset_sample = self.dataset_sample_index[idx]
 
         tokens = self.datatrove_datasets[dataset][dataset_sample]
-        tokens[0] = self.dataset_tokens[dataset]  # Prepend language token
+        tokens["input_ids"][0] = self.dataset_tokens[dataset]  # Prepend language token
 
         return tokens
 
@@ -144,7 +147,7 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset_index, dataset_sample_index = build_nanoset_index_helper(
             n_samples=self.split_samples_per_epoch,
             weights=self.dataset_weights,
-            dataset_sizes=self.split_dataset_lengths,
+            dataset_sizes=self.split_dataset_lenghts,
             offsets=self.split_dataset_offsets,
         )
         # Shuffle the indexes the same way
