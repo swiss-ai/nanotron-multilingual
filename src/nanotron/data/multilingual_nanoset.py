@@ -32,6 +32,7 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         token_size: int,
         train_split_num_samples: int,
         valid_split_num_samples: int,
+        dataset_tokens: List[int],
         is_valid: bool = False,
         dataset_weights: Union[List[float], None] = None,
         random_seed: int = 1234,
@@ -48,6 +49,7 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         self.token_size = token_size
         self.train_split_num_samples = train_split_num_samples
         self.valid_split_num_samples = valid_split_num_samples
+        self.dataset_tokens = dataset_tokens
         self.is_valid = is_valid
         self.random_seed = random_seed
         self.datatrove_datasets = []
@@ -129,7 +131,10 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset = self.dataset_index[idx]
         dataset_sample = self.dataset_sample_index[idx]
 
-        return self.datatrove_datasets[dataset][dataset_sample]
+        tokens = self.datatrove_datasets[dataset][dataset_sample]
+        tokens[0] = self.dataset_tokens[dataset]  # Prepend language token
+
+        return tokens
 
     def build_nanoset_index(self) -> np.ndarray:
         """
