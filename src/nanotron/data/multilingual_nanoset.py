@@ -1,6 +1,5 @@
 import os
 import warnings
-from math import ceil
 from typing import Dict, List, Tuple, Union
 
 import numpy as np
@@ -32,7 +31,6 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         sequence_length: int,
         token_size: int,
         train_split_num_samples: int,
-        valid_split_num_samples: int,
         dataset_tokens: List[int],
         is_valid: bool = False,
         dataset_weights: Union[List[float], None] = None,
@@ -49,7 +47,6 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         self.sequence_length = sequence_length
         self.token_size = token_size
         self.train_split_num_samples = train_split_num_samples
-        self.valid_split_num_samples = valid_split_num_samples
         self.dataset_tokens = dataset_tokens
         self.is_valid = is_valid
         self.random_seed = random_seed
@@ -80,36 +77,11 @@ class MultilingualNanoset(torch.utils.data.Dataset):
             self.dataset_weights
         ), f"Specified {len(self.dataset_weights)} weights but {len(dataset_folders)} datasets were provided."
         ## Build dataset index and dataset sample index
-        ### Split dataset_lengths into train_dataset_lenghts & valid_dataset_lenghts
-        self.valid_dataset_lenghts = [
-            ceil(weight * valid_split_num_samples) for weight in self.dataset_weights
-        ]  # Better not tu use numpy so we don't get overflow issues
-        # Assert that we have sufficient samples to build the valid split
-        for ds_index in range(len(self.dataset_lengths)):
-            assert (
-                self.dataset_lengths[ds_index] > self.valid_dataset_lenghts[ds_index]
-            ), f"Trying to build validation dataset with {self.valid_dataset_lenghts[ds_index]} samples but {dataset_folders[ds_index]} just have {self.dataset_lengths[ds_index]} samples."
-        self.train_dataset_lenghts = [
-            a - b for a, b in zip(self.dataset_lengths, self.valid_dataset_lenghts)
-        ]  # Subtract the valid samples from the training dataset
-
         if is_valid:  # Valid MultilingualNanoset
-            self.split_num_samples = valid_split_num_samples
-            self.split_samples_per_epoch = valid_split_num_samples
-            self.num_epochs = 1
-            self.split_dataset_lenghts = self.valid_dataset_lenghts
-            self.split_dataset_offsets = self.train_dataset_lenghts
+            self.dataset_index, self.dataset_sample_index = self.build_valid_nanoset_index(self.dataset_lengths)
 
         else:  # Train MultilingualNanoset
-            self.split_num_samples = train_split_num_samples
-            self.split_samples_per_epoch = sum(self.train_dataset_lenghts)
-            self.num_epochs = int(self.split_num_samples / self.split_samples_per_epoch) + 1
-            self.split_dataset_lenghts = self.train_dataset_lenghts
-            self.split_dataset_offsets = [
-                0 for _ in range(len(self.dataset_lengths))
-            ]  # For training there is NO offset
-
-        self.dataset_index, self.dataset_sample_index = self.build_nanoset_index()
+            self.dataset_index, self.dataset_sample_index = self.build_train_nanoset_index()
 
         self.print_nanoset_info()
 
@@ -139,16 +111,16 @@ class MultilingualNanoset(torch.utils.data.Dataset):
 
         return tokens
 
-    def build_nanoset_index(self) -> np.ndarray:
+    def build_train_nanoset_index(self) -> np.ndarray:
         """
-        Build dataset index and dataset sample index
+        Build train dataset index and dataset sample index
         """
+        # Compute samples per epoch and number of epochs
+        samples_per_epoch = sum(self.dataset_lengths)
+        num_epochs = int(self.train_split_num_samples / samples_per_epoch) + 1
         # Build the dataset indexes for 1 epoch
-        dataset_index, dataset_sample_index = build_nanoset_index_helper(
-            n_samples=self.split_samples_per_epoch,
-            weights=self.dataset_weights,
-            dataset_sizes=self.split_dataset_lenghts,
-            offsets=self.split_dataset_offsets,
+        dataset_index, dataset_sample_index = build_train_nanoset_index_helper(
+            n_samples=samples_per_epoch, weights=self.dataset_weights, dataset_sizes=self.dataset_lengths
         )
         # Shuffle the indexes the same way
         numpy_random_state = np.random.RandomState(self.random_seed)
@@ -156,13 +128,27 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         numpy_random_state = np.random.RandomState(self.random_seed)
         numpy_random_state.shuffle(dataset_sample_index)
         # Concatenate num_epochs the shuffled indexes
-        dataset_index = np.concatenate([dataset_index for _ in range(self.num_epochs)])
-        dataset_sample_index = np.concatenate([dataset_sample_index for _ in range(self.num_epochs)])
+        dataset_index = np.concatenate([dataset_index for _ in range(num_epochs)])
+        dataset_sample_index = np.concatenate([dataset_sample_index for _ in range(num_epochs)])
         # Just keep the necessary samples
-        dataset_index = dataset_index[: self.split_num_samples]
-        dataset_sample_index = dataset_sample_index[: self.split_num_samples]
+        dataset_index = dataset_index[: self.train_split_num_samples]
+        dataset_sample_index = dataset_sample_index[: self.train_split_num_samples]
 
         return dataset_index, dataset_sample_index
+
+    @jit(nopython=True, cache=True)
+    def build_valid_nanoset_index(dataset_lengths: List[int]) -> np.ndarray:
+        """
+        Build valid dataset index and dataset sample index
+        """
+        dataset_index = []
+        dataset_sample_index = []
+
+        for i, length in enumerate(dataset_lengths):
+            dataset_index.extend([i] * length)
+            dataset_sample_index.extend(range(length))
+
+        return np.array(dataset_index, dtype="uint"), np.array(dataset_sample_index, dtype="long")
 
     def print_nanoset_info(self):
 
@@ -191,8 +177,8 @@ class MultilingualNanoset(torch.utils.data.Dataset):
 
 
 @jit(nopython=True, cache=True)
-def build_nanoset_index_helper(
-    n_samples: int, weights: np.ndarray, dataset_sizes: List[int], offsets: List[int]
+def build_train_nanoset_index_helper(
+    n_samples: int, weights: np.ndarray, dataset_sizes: List[int]
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Given multiple datasets and a weighting array, build samples indexes
@@ -219,9 +205,7 @@ def build_nanoset_index_helper(
 
         # Assign the dataset index and update the sample index
         dataset_index[sample_idx] = max_error_index
-        dataset_sample_index[sample_idx] = (
-            current_samples[max_error_index] % dataset_sizes[max_error_index]
-        ) + offsets[max_error_index]
+        dataset_sample_index[sample_idx] = current_samples[max_error_index] % dataset_sizes[max_error_index]
 
         # Update the total samples for the selected dataset
         current_samples[max_error_index] += 1
