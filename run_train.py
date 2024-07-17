@@ -189,7 +189,7 @@ def get_dataloader_from_data_stage(
 
         with main_rank_first(trainer.parallel_context.world_pg):
             train_dataset = MultilingualNanoset(
-                dataset_folders=data.dataset.dataset_folder,
+                dataset_folders=data.dataset.training_folder,
                 dataset_weights=data.dataset.dataset_weights,
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
@@ -238,11 +238,9 @@ def get_valid_dataloader_from_data_stage(
 
         with main_rank_first(trainer.parallel_context.world_pg):
             valid_dataset = MultilingualNanoset(
-                dataset_folders=data.dataset.dataset_folder,
-                dataset_weights=data.dataset.dataset_weights,
+                dataset_folders=data.dataset.validation_folder,
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
-                train_split_num_samples=trainer.config.tokens.train_steps * trainer.global_batch_size,
                 dataset_tokens=data.dataset.dataset_tokens,
                 is_valid=True,
                 random_seed=data.seed,

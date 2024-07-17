@@ -110,21 +110,20 @@ class NanosetDatasetsArgs:
 @dataclass
 class MultilingualNanosetDatasetsArgs:
     training_folder: Union[str, dict, List[str]]
-    validation_folder: Union[str, dict, List[str]]
-    dataset_tokens: List[
-        int
-    ]  # Set token for each language previously defined. We use a List and not a dict because this way we support specifyng weights (dict) or not (List[str])
+    validation_folder: Union[str, List[str]]
+    dataset_tokens: List[int]  # Set token for each language previously defined
 
     def __post_init__(self):
-        if isinstance(self.dataset_folder, str):  # Case 1: 1 Dataset file
-            self.dataset_folder = [self.dataset_folder]
+        if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
+            self.training_folder = [self.training_folder]
+            self.validation_folder = [self.validation_folder]
             self.dataset_weights = [1]
-        elif isinstance(self.dataset_folder, List):  # Case 2: > 1 Dataset file
+        elif isinstance(self.training_folder, List):  # Case 2: > 1 Dataset folder
             self.dataset_weights = None  # Set to None so we consume all the samples randomly
-        elif isinstance(self.dataset_folder, dict):  # Case 3: dict with > 1 dataset_folder and weights
-            tmp_dataset_folder = self.dataset_folder.copy()
-            self.dataset_folder = list(tmp_dataset_folder.keys())
-            self.dataset_weights = list(tmp_dataset_folder.values())
+        elif isinstance(self.training_folder, dict):  # Case 3: dict with > 1 training_folder and weights
+            tmp_training_folder = self.training_folder.copy()
+            self.training_folder = list(tmp_training_folder.keys())
+            self.dataset_weights = list(tmp_training_folder.values())
 
         assert len(self.training_folder) == len(self.validation_folder)
         assert len(self.training_folder) == len(self.dataset_tokens)

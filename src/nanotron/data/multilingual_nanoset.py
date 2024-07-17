@@ -30,8 +30,8 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset_folders: List[str],
         sequence_length: int,
         token_size: int,
-        train_split_num_samples: int,
         dataset_tokens: List[int],
+        train_split_num_samples: int = None,
         is_valid: bool = False,
         dataset_weights: Union[List[float], None] = None,
         random_seed: int = 1234,
@@ -78,7 +78,7 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         ), f"Specified {len(self.dataset_weights)} weights but {len(dataset_folders)} datasets were provided."
         ## Build dataset index and dataset sample index
         if is_valid:  # Valid MultilingualNanoset
-            self.dataset_index, self.dataset_sample_index = self.build_valid_nanoset_index(self.dataset_lengths)
+            self.dataset_index, self.dataset_sample_index = build_valid_nanoset_index(self.dataset_lengths)
 
         else:  # Train MultilingualNanoset
             self.dataset_index, self.dataset_sample_index = self.build_train_nanoset_index()
@@ -135,20 +135,6 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset_sample_index = dataset_sample_index[: self.train_split_num_samples]
 
         return dataset_index, dataset_sample_index
-
-    @jit(nopython=True, cache=True)
-    def build_valid_nanoset_index(dataset_lengths: List[int]) -> np.ndarray:
-        """
-        Build valid dataset index and dataset sample index
-        """
-        dataset_index = []
-        dataset_sample_index = []
-
-        for i, length in enumerate(dataset_lengths):
-            dataset_index.extend([i] * length)
-            dataset_sample_index.extend(range(length))
-
-        return np.array(dataset_index, dtype="uint"), np.array(dataset_sample_index, dtype="long")
 
     def print_nanoset_info(self):
 
@@ -211,3 +197,18 @@ def build_train_nanoset_index_helper(
         current_samples[max_error_index] += 1
 
     return dataset_index, dataset_sample_index
+
+
+@jit(nopython=True, cache=True)
+def build_valid_nanoset_index(dataset_lengths: List[int]) -> np.ndarray:
+    """
+    Build valid dataset index and dataset sample index
+    """
+    dataset_index = []
+    dataset_sample_index = []
+
+    for i, length in enumerate(dataset_lengths):
+        dataset_index.extend([i] * length)
+        dataset_sample_index.extend(range(length))
+
+    return np.array(dataset_index, dtype="uint"), np.array(dataset_sample_index, dtype="long")
