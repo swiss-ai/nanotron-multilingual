@@ -194,7 +194,6 @@ def get_dataloader_from_data_stage(
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
                 train_split_num_samples=trainer.config.tokens.train_steps * trainer.global_batch_size,
-                valid_split_num_samples=trainer.config.tokens.limit_val_batches * trainer.global_batch_size,
                 dataset_tokens=data.dataset.dataset_tokens,
                 random_seed=data.seed,
             )
@@ -222,7 +221,6 @@ def get_dataloader_from_data_stage(
 def get_valid_dataloader_from_data_stage(
     trainer: DistributedTrainer,
     data: DataArgs,
-    valid_split_num_samples: int,
     # consumed_train_samples: int, We will never use this because in each valid iteration we consume all the samples
 ):
 
@@ -245,7 +243,6 @@ def get_valid_dataloader_from_data_stage(
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
                 train_split_num_samples=trainer.config.tokens.train_steps * trainer.global_batch_size,
-                valid_split_num_samples=valid_split_num_samples,
                 dataset_tokens=data.dataset.dataset_tokens,
                 is_valid=True,
                 random_seed=data.seed,
@@ -259,7 +256,6 @@ def get_valid_dataloader_from_data_stage(
             input_pp_rank=input_pp_rank,
             output_pp_rank=output_pp_rank,
             micro_batch_size=trainer.micro_batch_size,
-            consumed_train_samples=0,
             dataloader_num_workers=data.num_loading_workers,
             dataloader_drop_last=True,
         )
@@ -319,21 +315,18 @@ def get_valid_dataloader(trainer: DistributedTrainer) -> Dict[str, DataLoader]:
         # NOTE: we only create the dataloader for the first stage,
         # then we lazy initialize the dataloader for the other stages
         stage = cast(DatasetStageArgs, stage)
-        valid_split_num_samples = trainer.config.tokens.limit_val_batches * trainer.global_batch_size
 
         log_rank(
-            f"[Validation Plan] Stage {stage.name} has {valid_split_num_samples} samples in the validation set",
+            f"[Validation Plan] Stage {stage.name} has {len(stage.data.dataset.validation_folder)} folders with samples in the validation set",
             logger=logger,
             level=logging.INFO,
             rank=0,
         )
 
         dataloader = (
-            get_valid_dataloader_from_data_stage(trainer, stage.data, valid_split_num_samples=valid_split_num_samples)
+            get_valid_dataloader_from_data_stage(trainer, stage.data)
             if stage_idx == 0
-            else lambda stage=stage: get_dataloader_from_data_stage(
-                trainer, stage.data, valid_split_num_samples=valid_split_num_samples
-            )
+            else lambda stage=stage: get_dataloader_from_data_stage(trainer, stage.data)
         )
         dataloaders[stage.name] = dataloader
     return dataloaders
