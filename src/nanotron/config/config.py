@@ -109,7 +109,8 @@ class NanosetDatasetsArgs:
 
 @dataclass
 class MultilingualNanosetDatasetsArgs:
-    dataset_folder: Union[str, dict, List[str]]
+    training_folder: Union[str, dict, List[str]]
+    validation_folder: Union[str, dict, List[str]]
     dataset_tokens: List[
         int
     ]  # Set token for each language previously defined. We use a List and not a dict because this way we support specifyng weights (dict) or not (List[str])
@@ -125,7 +126,8 @@ class MultilingualNanosetDatasetsArgs:
             self.dataset_folder = list(tmp_dataset_folder.keys())
             self.dataset_weights = list(tmp_dataset_folder.values())
 
-        assert len(self.dataset_folder) == len(self.dataset_tokens)
+        assert len(self.training_folder) == len(self.validation_folder)
+        assert len(self.training_folder) == len(self.dataset_tokens)
 
 
 @dataclass
