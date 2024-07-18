@@ -111,7 +111,7 @@ class NanosetDatasetsArgs:
 class MultilingualNanosetDatasetsArgs:
     training_folder: Union[str, dict, List[str]]
     validation_folder: Union[str, List[str]]
-    dataset_tokens: List[int]  # Set token for each language previously defined
+    lang_to_ids: dict  # Mapping from the previously defined folders to tokens. Respect the order
 
     def __post_init__(self):
         if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
@@ -125,8 +125,13 @@ class MultilingualNanosetDatasetsArgs:
             self.training_folder = list(tmp_training_folder.keys())
             self.dataset_weights = list(tmp_training_folder.values())
 
-        assert len(self.training_folder) == len(self.validation_folder)
-        assert len(self.training_folder) == len(self.dataset_tokens)
+        self.dataset_tokens = list(self.lang_to_ids.values())
+        assert len(self.training_folder) == len(
+            self.validation_folder
+        ), f"The sizes of training_folder and validation_folder mismatch ({len(self.training_folder)} vs {len(self.validation_folder)})"
+        assert len(self.training_folder) == len(
+            self.dataset_tokens
+        ), f"The sizes of training_folder and lang_to_ids mismatch ({len(self.training_folder)} vs {len(self.dataset_tokens)})"
 
 
 @dataclass
