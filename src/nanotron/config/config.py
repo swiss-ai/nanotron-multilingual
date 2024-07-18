@@ -108,10 +108,37 @@ class NanosetDatasetsArgs:
 
 
 @dataclass
+class MultilingualNanosetDatasetsArgs:
+    training_folder: Union[str, dict, List[str]]
+    validation_folder: Union[str, List[str]]
+    lang_to_ids: dict  # Mapping from the previously defined folders to tokens. Respect the order
+
+    def __post_init__(self):
+        if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
+            self.training_folder = [self.training_folder]
+            self.validation_folder = [self.validation_folder]
+            self.dataset_weights = [1]
+        elif isinstance(self.training_folder, List):  # Case 2: > 1 Dataset folder
+            self.dataset_weights = None  # Set to None so we consume all the samples randomly
+        elif isinstance(self.training_folder, dict):  # Case 3: dict with > 1 training_folder and weights
+            tmp_training_folder = self.training_folder.copy()
+            self.training_folder = list(tmp_training_folder.keys())
+            self.dataset_weights = list(tmp_training_folder.values())
+
+        self.dataset_tokens = list(self.lang_to_ids.values())
+        assert len(self.training_folder) == len(
+            self.validation_folder
+        ), f"The sizes of training_folder and validation_folder mismatch ({len(self.training_folder)} vs {len(self.validation_folder)})"
+        assert len(self.training_folder) == len(
+            self.dataset_tokens
+        ), f"The sizes of training_folder and lang_to_ids mismatch ({len(self.training_folder)} vs {len(self.dataset_tokens)})"
+
+
+@dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs]
+    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs, MultilingualNanosetDatasetsArgs]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
