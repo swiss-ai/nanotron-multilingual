@@ -9,8 +9,8 @@ data_stages:
     dataset:
       training_folder: datasets/c4-es/train
       validation_folder: datasets/c4-es/validation
-      dataset_tokens:
-      - 15
+      lang_to_ids:
+        es: 128002
     num_loading_workers: 1
     seed: 42
   name: General purpose training (Single dataset)
@@ -25,10 +25,10 @@ data_stages:
       - datasets/c4-es/validation
       - datasets/c4-en/validation
       - datasets/c4-fr/validation
-      dataset_tokens:
-      - 15
-      - 16
-      - 17
+      lang_to_ids:
+        es: 128002
+        en: 128003
+        fr: 128004
     num_loading_workers: 1
     seed: 42
   name: Second purpose training (> 1 dataset)
@@ -43,10 +43,10 @@ data_stages:
       - datasets/c4-es/validation
       - datasets/c4-en/validation
       - datasets/c4-fr/validation
-      dataset_tokens:
-      - 15
-      - 16
-      - 17
+      lang_to_ids:
+        es: 128002
+        en: 128003
+        fr: 128004
 
     num_loading_workers: 1
     seed: 42
