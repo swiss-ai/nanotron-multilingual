@@ -131,4 +131,4 @@ tokens:
   micro_batch_size: 4
   sequence_length: 1024
   train_steps: 200
-  val_check_interval: -1
+  val_check_interval: 3

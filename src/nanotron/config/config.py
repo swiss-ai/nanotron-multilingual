@@ -125,6 +125,7 @@ class MultilingualNanosetDatasetsArgs:
             self.training_folder = list(tmp_training_folder.keys())
             self.dataset_weights = list(tmp_training_folder.values())
 
+        self.ids_to_lang = {v: k for k, v in self.lang_to_ids.items()}
         self.dataset_tokens = list(self.lang_to_ids.values())
         assert len(self.training_folder) == len(
             self.validation_folder

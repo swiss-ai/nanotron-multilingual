@@ -2,6 +2,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, Iterable, Optional, Union
 
 import torch
+from torch import nn as torch_nn
+from torch.nn.parallel import DistributedDataParallel
+
 from nanotron import distributed as dist
 from nanotron import logging
 from nanotron.distributed import ProcessGroup
@@ -12,8 +15,6 @@ from nanotron.parallel.pipeline_parallel.context_manager import attach_pipeline_
 from nanotron.parallel.pipeline_parallel.state import PipelineTrainBatchState
 from nanotron.parallel.pipeline_parallel.tensor_pointer import TensorPointer
 from nanotron.utils import ContextManagers
-from torch import nn as torch_nn
-from torch.nn.parallel import DistributedDataParallel
 
 logger = logging.get_logger(__name__)
 
@@ -29,6 +30,7 @@ class PipelineEngine(ABC):
         state: PipelineTrainBatchState,
         micro_batch: Dict[str, Union[torch.Tensor, TensorPointer]],
         model: torch_nn.Module,
+        is_validation: bool = False,
     ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
         # Increment the number of backwards
         state.nb_forwards += 1
@@ -52,7 +54,7 @@ class PipelineEngine(ABC):
             output["loss"] = output["loss"] / self.nb_microbatches
 
         # Add output as activations that require backward pass
-        if not isinstance(output["loss"], TensorPointer):
+        if not isinstance(output["loss"], TensorPointer) and not is_validation:
             assert output["loss"].requires_grad
             state.register_activation_requiring_backward(output["loss"])
         return output
@@ -138,12 +140,15 @@ class PipelineEngine(ABC):
         self.nb_microbatches = nb_microbatches
 
         outputs = []
+        lang_ids = []
 
         with attach_pipeline_state_to_model(model=model, pipeline_state=state):
             # All forward
             for micro_batch in batch:
                 context = self._get_fwd_context(model=model)
-                output = self.forward(context=context, state=state, micro_batch=micro_batch, model=model)
+                output = self.forward(
+                    context=context, state=state, micro_batch=micro_batch, model=model, is_validation=True
+                )
                 # TODO @thomasw21: Somehow this needs to be done somewhere else to support interleaving. Somewhere right after a "stage"
                 for _ in range(len(state.microbatches_activations_to_send)):
                     send_activation = state.microbatches_activations_to_send.popleft()
@@ -151,15 +156,23 @@ class PipelineEngine(ABC):
                     send_activation()
 
                 # We make `output` a dict
+                # TODO convert to dict other items returned by the model (MoE aux loss for example)
+                # But in next if statement be careful if we return other items in all of the pp processes
+                # This conversion to dicts is kind of useless as the model already returns a dict with loss key. Maybe the PP ranks return TensorPointer Objects?
                 if not isinstance(output, dict):
                     output = {"loss": output}
 
                 # Store the loss for each microbatch
                 if not isinstance(output["loss"], TensorPointer):
                     output = {k: v.detach() for k, v in output.items()}
-                outputs.append(output)
+                    # TODO ver este output que es y tambien ver en outputs como se guarda. Donde se have la media? En el training step lol
+                    # Aqui deberiamos segregar por languagues porque es el unico punto en el que tenemos la languague!! O al menos "etiquetarla" o acumularla por language
+                    # 1. Hacemos dict con key para cada idioma 2. cada key tiene una lista donde append los tensors 3. en valid step hacemos lo del stack y allreduces
+                    # Finalmente: Aqui metemos solo el lang ids, en trainer.py acumularemos los resultados y tal.
+                outputs.extend(list(output["sample_loss"]))  # TODO flatten?????? o extend??????
+                lang_ids.extend(micro_batch["input_ids"][:, 0].tolist())  # TODO esto deberia se un extend????
 
-        return outputs
+        return outputs, lang_ids
 
 
 class AllForwardAllBackwardPipelineEngine(PipelineEngine):
