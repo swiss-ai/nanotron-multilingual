@@ -256,6 +256,7 @@ def get_valid_dataloader_from_data_stage(
             micro_batch_size=trainer.micro_batch_size,
             dataloader_num_workers=data.num_loading_workers,
             dataloader_drop_last=True,
+            shuffle=True,
         )
 
         return valid_dataloader
@@ -315,7 +316,7 @@ def get_valid_dataloader(trainer: DistributedTrainer) -> Dict[str, DataLoader]:
         stage = cast(DatasetStageArgs, stage)
 
         log_rank(
-            f"[Validation Plan] Stage {stage.name} has {len(stage.data.dataset.validation_folder)} folders with samples in the validation set",
+            f"[Validation Plan] Stage {stage.name} has {len(stage.data.dataset.validation_folder)} folders with samples for the validation set",
             logger=logger,
             level=logging.INFO,
             rank=0,

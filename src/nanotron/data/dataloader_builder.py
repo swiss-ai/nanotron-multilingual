@@ -23,6 +23,7 @@ def build_nanoset_dataloader(
     consumed_train_samples: int = 0,
     dataloader_drop_last: bool = True,
     dataloader_pin_memory: bool = True,
+    shuffle: bool = False,
 ) -> DataLoader:
 
     # Case of ranks not requiring data. We give them a dummy dataset, then the collator will do his job
@@ -49,7 +50,7 @@ def build_nanoset_dataloader(
         dl_rank=dp_rank,
         drop_last=dataloader_drop_last,
         consumed_train_samples=consumed_train_samples,
-        shuffle=False,
+        shuffle=shuffle,
     )
 
     return DataLoader(
