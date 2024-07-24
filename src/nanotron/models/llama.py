@@ -825,8 +825,10 @@ class Loss(nn.Module):
         ).transpose(0, 1)
         # TODO @thomasw21: It's unclear what kind of normalization we want to do.
         sample_loss = masked_mean(sample_loss, label_mask, dtype=torch.float)
-        # NOTE @tj.solergibert: masked_mean returns a single scalar with the batch loss. We've changed it to compute the SAMPLE loss.
+        # NOTE(tj.solergibert) masked_mean returns a single scalar with the batch loss. We've changed it to compute the SAMPLE loss.
         # We will continue using "loss" as the batch loss but we add "sample_loss" for the multilingual effort.
+        # WARN(tj.solergibert) Don't panic, the batch loss used to update the parameters is computed in `LlamaForTraining`
+
         # TODO @thomasw21: I think indexing causes a sync we don't actually want
         # TODO @thomasw21: loss = loss[label_mask].sum()
         return {"sample_loss": sample_loss}

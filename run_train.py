@@ -238,10 +238,10 @@ def get_valid_dataloader_from_data_stage(
 
         with main_rank_first(trainer.parallel_context.world_pg):
             valid_dataset = MultilingualNanoset(
-                dataset_folders=data.dataset.validation_folder,  # TODO Just 1 folder
+                dataset_folders=data.dataset.validation_folder,
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
-                dataset_tokens=data.dataset.dataset_tokens,  # TODO Just 1 lang
+                dataset_tokens=data.dataset.dataset_tokens,
                 is_valid=True,
                 random_seed=data.seed,
             )
@@ -331,9 +331,12 @@ def get_valid_dataloader(trainer: DistributedTrainer) -> Dict[str, DataLoader]:
         # the validation MultilingualNanoset info (Number of samples, etc.) [UPDATE: ]. In order to solve that, we could get rid of this lambda
         # funcs and directly create all dataloaders.
         #
-        # This lambda functs (Used in training too) are for creating the DataLoaders lazyly FOR 1. Start training faster instead of creating multiple DataLoaders
-        # 2. Consume less memory as the lambda func is lighter that the DataLoader object with the Dataset, collator, etc.
-        # BUT 1. The Nanoset creation process is very fast and 2. Nanosets doesn't consume any memory at all till we start sampling from the Nanoset
+        # This lambda functs (Used in training too) are for creating the DataLoaders lazyly FOR 1. Start training faster instead
+        # of creating multiple DataLoaders 2. Consume less memory as the lambda func is lighter that the DataLoader object with
+        # the Dataset, collator, etc.
+        # BUT 1. The Nanoset creation process is very fast and 2. Nanosets doesn't consume any memory at all till we start sampling
+        # from the Nanoset. Also they later transform the DataLoader into a Iterator object so it's impossible to retrieve
+        # the DataLoader object again to delete it (More comments in trainer.py)
         dataloaders[stage.name] = dataloader
     return dataloaders
 

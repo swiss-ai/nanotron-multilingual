@@ -457,7 +457,7 @@ class DistributedTrainer:
 
         stage_idx_to_resume = find_stage_idx_to_resume()
 
-        for stage_idx, stage in enumerate(self.config.data_stages):  # TODO check metadatalaststageindex init
+        for stage_idx, stage in enumerate(self.config.data_stages):
             if stage_idx < self.metadata.last_stage_idx:
                 continue
 
@@ -541,22 +541,17 @@ class DistributedTrainer:
                 outputs, loss_avg = self.training_step(dataloader=self.current_dataloader)
                 self.training_step_time = time.time()
 
-                # Validation step
-                # TODO A ver, en este loop solo se lleva a cabo una training iteration pero claro hay un porron de validation iteration... mmmmm
-                # Tal vez deberiamos mover esto a otro lugar? Es decir, aqui se have un training step pero hacemos varios validation steps
-                # Lo podemos dejar aqui solamente que las metricas de throughput y tokens consumidos se tendrian que revisar
-                # Porque actualmente utilizan la global batch size, que es correcta ya que es la que tiene cada training step pero claro,
-                # Cada validation es mucho mas largo que un training step
-                # Puede que el len valid dataloader de el numero de valid batches por lo que con eso y la batch size podemos tirar millas
+                # Validation stage
                 if self.iteration_step % self.config.tokens.val_check_interval == 0:
                     self._prepare_dataloader_for_validation_stage(valid_dataloader_or_dls)
                     val_global_loss, val_lang_losses = self.validation_step(
                         dataloader=self.current_validation_dataloader
                     )
                     self.validation_step_time = time.time()
-                    self.validation_step_logs(
-                        val_global_loss, val_lang_losses
-                    )  # TODO(tj.solergibert) Check what happens when val_check_interval % iteration_step_info_interval != 0
+                else:
+                    # NOTE(tj.solergibert) As we are reporting the training & validation metrics together, we
+                    # must comply with val_check_interval % iteration_step_info_interval = 0
+                    val_global_loss, val_lang_losses = None, None
 
                 # Training Logs
                 # TODO(xrsrke): refactor using callbacks would be better
@@ -567,7 +562,9 @@ class DistributedTrainer:
                 ].consumed_train_samples += self.global_batch_size
 
                 if (self.iteration_step - 1) % self.config.logging.iteration_step_info_interval == 0:
-                    self.train_step_logs(outputs=outputs, loss_avg=loss_avg)
+                    self.train_step_logs(
+                        outputs=outputs, loss_avg=loss_avg, global_loss=val_global_loss, lang_losses=val_lang_losses
+                    )
 
                 # Checkpoint
                 if self.iteration_step % self.config.checkpoints.checkpoint_interval == 0:
@@ -711,12 +708,14 @@ class DistributedTrainer:
 
     def train_step_logs(
         self,
-        outputs: Iterable[Dict[str, Union[torch.Tensor, TensorPointer]]],
         loss_avg: Optional[torch.Tensor],
+        global_loss: torch.Tensor,
+        lang_losses: torch.Tensor,
     ) -> None:
         # TODO @nouamanetazi: Megatron-LM seems to be using a barrier to report their interval time. Check if this is necessary. https://github.com/NouamaneTazi/Megatron-LM/blob/e241a96c3085b18e36c6cee1d68a8155de77b5a6/megatron/training.py#L607
         dist.barrier()
         torch.cuda.synchronize()
+        # Training metrics
         elapsed_time_per_iteration_ms = (self.training_step_time - self.iteration_start_time) * 1000
         tokens_per_sec = (
             self.global_batch_size * self.sequence_length / (elapsed_time_per_iteration_ms / 1000)
@@ -727,9 +726,24 @@ class DistributedTrainer:
             global_batch_size=self.global_batch_size,
         )
 
+        # Validation metrics
+        if global_loss is not None:
+            validation_total_samples = self.current_validation_dataloader_lenght * self.micro_batch_size
+            validation_elapsed_time_per_iteration_ms = (self.validation_step_time - self.training_step_time) * 1000
+            validation_tokens_per_sec = (
+                validation_total_samples * self.sequence_length / (validation_elapsed_time_per_iteration_ms / 1000)
+            )  # tokens_per_sec is calculated using sequence_length
+
+            validation_model_tflops, validation_hardware_tflops = self.unwrapped_model.get_flops_per_sec(
+                iteration_time_in_sec=validation_elapsed_time_per_iteration_ms / 1000,
+                sequence_length=self.sequence_length,
+                global_batch_size=validation_total_samples,  # TODO con esto de la global batch size yo la pondria a 1 y multiplicaba por el numero de batches
+            )
+
         if dist.get_rank(self.parallel_context.world_pg) in self.logger_ranks:
             assert self.loggerwriter is not None, "loggerwriter should be defined on logger ranks"
 
+            # Training metrics
             lr = self.lr_scheduler.get_last_lr()[0]
 
             log_entries = [
@@ -752,6 +766,44 @@ class DistributedTrainer:
 
             if self.config.optimizer.clip_grad is not None:
                 log_entries.append(LogItem("grad_norm", self.grad_norm_unclipped.item(), "human_format"))  # , ".3f"))
+
+            # Validation metrics
+            if global_loss is not None:
+                log_entries = [
+                    LogItem(
+                        "validation_consumed_tokens",
+                        self.metadata.consumed_train_samples * self.config.tokens.sequence_length,
+                        "human_format",
+                    ),  # , "12d"),
+                    LogItem(
+                        "validation_elapsed_time_per_iteration_ms",
+                        validation_elapsed_time_per_iteration_ms,
+                        "human_format",
+                    ),  # , ".1f"),
+                    LogItem("validation_tokens_per_sec", validation_tokens_per_sec, "human_format"),  # , "1.6E"),
+                    LogItem(
+                        "validation_tokens_per_sec_per_gpu",
+                        validation_tokens_per_sec / self.parallel_context.world_pg.size(),
+                        "human_format",
+                    ),  # , "1.6E"),
+                    LogItem("validation_loss", global_loss.item(), "human_format"),  # , "1.6E"),
+                    LogItem(
+                        "validation_model_tflops_per_gpu", validation_model_tflops / 3, "human_format"
+                    ),  # , ".2f"),
+                    LogItem(
+                        "validation_hardware_tflops_per_gpu", validation_hardware_tflops / 3, "human_format"
+                    ),  # , ".2f"),
+                ]
+
+                # NOTE Currently you have to log each lang metric one by one and then merge them manually in the same plot through the wandb UI.
+                #   Example: https://community.wandb.ai/t/log-multiple-variables-at-the-same-plot/2474
+                #   GitHub complains: https://github.com/wandb/wandb/issues/3035
+                log_entries.extend(
+                    [
+                        LogItem(f"{lang}_validation_loss", loss.item(), "human_format")
+                        for lang, loss in lang_losses.items()
+                    ]
+                )
 
             # Log not too often the memory
             if self.iteration_step < 5 or (self.iteration_step - 1) % self.config.checkpoints.checkpoint_interval == 0:
@@ -795,70 +847,6 @@ class DistributedTrainer:
                 os.system("scancel " + os.environ["SLURM_JOB_ID"])
             else:
                 exit(0)
-
-    def validation_step_logs(
-        self,
-        global_loss: torch.Tensor,
-        lang_losses: torch.Tensor,
-    ) -> None:
-        # TODO @nouamanetazi: Megatron-LM seems to be using a barrier to report their interval time. Check if this is necessary. https://github.com/NouamaneTazi/Megatron-LM/blob/e241a96c3085b18e36c6cee1d68a8155de77b5a6/megatron/training.py#L607
-        dist.barrier()
-        torch.cuda.synchronize()
-        total_validation_samples = self.current_validation_dataloader_lenght * self.micro_batch_size
-        elapsed_time_per_iteration_ms = (self.validation_step_time - self.training_step_time) * 1000
-        tokens_per_sec = (
-            total_validation_samples * self.sequence_length / (elapsed_time_per_iteration_ms / 1000)
-        )  # tokens_per_sec is calculated using sequence_length
-        # TODO para el valid ojo con cambiar global_batch_size = len dataloader * mbs
-        model_tflops, hardware_tflops = self.unwrapped_model.get_flops_per_sec(
-            iteration_time_in_sec=elapsed_time_per_iteration_ms / 1000,
-            sequence_length=self.sequence_length,
-            global_batch_size=total_validation_samples,  # TODO con esto de la global batch size yo la pondria a 1 y multiplicaba por el numero de batches
-        )
-
-        if dist.get_rank(self.parallel_context.world_pg) in self.logger_ranks:
-            assert self.loggerwriter is not None, "loggerwriter should be defined on logger ranks"
-
-            log_entries = [
-                LogItem(
-                    "validation_consumed_tokens",
-                    self.metadata.consumed_train_samples * self.config.tokens.sequence_length,
-                    "human_format",
-                ),  # , "12d"),
-                LogItem(
-                    "validation_elapsed_time_per_iteration_ms", elapsed_time_per_iteration_ms, "human_format"
-                ),  # , ".1f"),
-                LogItem("validation_tokens_per_sec", tokens_per_sec, "human_format"),  # , "1.6E"),
-                LogItem(
-                    "validation_tokens_per_sec_per_gpu",
-                    tokens_per_sec / self.parallel_context.world_pg.size(),
-                    "human_format",
-                ),  # , "1.6E"),
-                LogItem("validation_loss", global_loss.item(), "human_format"),  # , "1.6E"),
-                LogItem("validation_model_tflops_per_gpu", model_tflops / 3, "human_format"),  # , ".2f"),
-                LogItem("validation_hardware_tflops_per_gpu", hardware_tflops / 3, "human_format"),  # , ".2f"),
-            ]
-
-            # NOTE Currently you have to log each lang metric one by one and then merge them manually in the same plot through the wandb UI.
-            #   Example: https://community.wandb.ai/t/log-multiple-variables-at-the-same-plot/2474
-            #   GitHub complains: https://github.com/wandb/wandb/issues/3035
-            log_entries.extend(
-                [LogItem(f"{lang}_validation_loss", loss.item(), "human_format") for lang, loss in lang_losses.items()]
-            )
-
-            # NOTE: only one rank writes to wandb
-            # NOTE(tj.solergibert) By default wandb.log performs a step in the x-axis every time.
-            #   Set commit=False to log values with the next wandb.log with the training logs
-            if dist.get_rank(self.parallel_context.world_pg) == self.logger_ranks[0] and wandb is not None:
-                wandb.log(
-                    {
-                        **{log_item.tag: log_item.scalar_value for log_item in log_entries},
-                        "iteration_step": self.iteration_step,
-                    },
-                    commit=False,
-                )
-
-            self.loggerwriter.add_scalars_from_list(log_entries, self.iteration_step)
 
     def init_model(self) -> Union[NanotronModel, DistributedDataParallel]:
         """Initialize the model and load weights from checkpoint if needed."""
