@@ -406,6 +406,13 @@ class Config:
                 for i in range(len(self.data_stages) - 1)
             ), "The stages are not sorted by start_training_step in increasing order"
 
+        # NOTE(tj.solergibert) As we are reporting the training & validation metrics together, we
+        # must comply with val_check_interval % iteration_step_info_interval = 0
+        if not self.tokens.val_check_interval % self.logging.iteration_step_info_interval == 0:
+            raise ValueError(
+                f"It is necessary to run the validation stage during a logging step. Validation interval: {self.tokens.val_check_interval}, Logging interval: {self.logging.iteration_step_info_interval}"
+            )
+
         # # if lighteval, we need tokenizer to be defined
         # if self.checkpoints.lighteval is not None:
         #     assert self.tokenizer.tokenizer_name_or_path is not None

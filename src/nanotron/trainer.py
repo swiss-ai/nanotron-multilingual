@@ -562,9 +562,7 @@ class DistributedTrainer:
                 ].consumed_train_samples += self.global_batch_size
 
                 if (self.iteration_step - 1) % self.config.logging.iteration_step_info_interval == 0:
-                    self.train_step_logs(
-                        outputs=outputs, loss_avg=loss_avg, global_loss=val_global_loss, lang_losses=val_lang_losses
-                    )
+                    self.train_step_logs(loss_avg=loss_avg, global_loss=val_global_loss, lang_losses=val_lang_losses)
 
                 # Checkpoint
                 if self.iteration_step % self.config.checkpoints.checkpoint_interval == 0:
@@ -769,31 +767,33 @@ class DistributedTrainer:
 
             # Validation metrics
             if global_loss is not None:
-                log_entries = [
-                    LogItem(
-                        "validation_consumed_tokens",
-                        self.metadata.consumed_train_samples * self.config.tokens.sequence_length,
-                        "human_format",
-                    ),  # , "12d"),
-                    LogItem(
-                        "validation_elapsed_time_per_iteration_ms",
-                        validation_elapsed_time_per_iteration_ms,
-                        "human_format",
-                    ),  # , ".1f"),
-                    LogItem("validation_tokens_per_sec", validation_tokens_per_sec, "human_format"),  # , "1.6E"),
-                    LogItem(
-                        "validation_tokens_per_sec_per_gpu",
-                        validation_tokens_per_sec / self.parallel_context.world_pg.size(),
-                        "human_format",
-                    ),  # , "1.6E"),
-                    LogItem("validation_loss", global_loss.item(), "human_format"),  # , "1.6E"),
-                    LogItem(
-                        "validation_model_tflops_per_gpu", validation_model_tflops / 3, "human_format"
-                    ),  # , ".2f"),
-                    LogItem(
-                        "validation_hardware_tflops_per_gpu", validation_hardware_tflops / 3, "human_format"
-                    ),  # , ".2f"),
-                ]
+                log_entries.extend(
+                    [
+                        LogItem(
+                            "validation_consumed_tokens",
+                            validation_total_samples * self.sequence_length,
+                            "human_format",
+                        ),  # , "12d"),
+                        LogItem(
+                            "validation_elapsed_time_per_iteration_ms",
+                            validation_elapsed_time_per_iteration_ms,
+                            "human_format",
+                        ),  # , ".1f"),
+                        LogItem("validation_tokens_per_sec", validation_tokens_per_sec, "human_format"),  # , "1.6E"),
+                        LogItem(
+                            "validation_tokens_per_sec_per_gpu",
+                            validation_tokens_per_sec / self.parallel_context.world_pg.size(),
+                            "human_format",
+                        ),  # , "1.6E"),
+                        LogItem("validation_loss", global_loss.item(), "human_format"),  # , "1.6E"),
+                        LogItem(
+                            "validation_model_tflops_per_gpu", validation_model_tflops / 3, "human_format"
+                        ),  # , ".2f"), # NOTE(tj.solergibert) Check llama.py --> def get_flops() --> model_flops for explanation of the / 3 factor
+                        LogItem(
+                            "validation_hardware_tflops_per_gpu", validation_hardware_tflops / 3, "human_format"
+                        ),  # , ".2f"), # NOTE(tj.solergibert) Check llama.py --> def get_flops() --> model_flops for explanation of the / 3 factor
+                    ]
+                )
 
                 # NOTE Currently you have to log each lang metric one by one and then merge them manually in the same plot through the wandb UI.
                 #   Example: https://community.wandb.ai/t/log-multiple-variables-at-the-same-plot/2474
