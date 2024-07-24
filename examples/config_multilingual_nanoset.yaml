@@ -124,7 +124,7 @@ parallelism:
 profiler: null
 tokenizer:
   tokenizer_max_length: null
-  tokenizer_name_or_path: /mloscratch/homes/solergib/models/Meta-Llama-3-8B
+  tokenizer_name_or_path: meta-llama/Meta-Llama-3-8B
   tokenizer_revision: null
 tokens:
   batch_accumulation_per_replica: 1
