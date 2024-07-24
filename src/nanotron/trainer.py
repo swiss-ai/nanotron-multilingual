@@ -311,7 +311,25 @@ class DistributedTrainer:
         #   1. We call this function EVERY TIME we run the validation loop
         #   2. Every time it returns a NEW validation iterator DataLoader. If you don't do this you'll consume the whole validation dataset
         #       in the first iteration and subsequent validations will fail
-        # TODO(tj.solergibert) Delete previous DataLoaders from memory like we do with training DataLoaders
+        # `dataloaders` are either torch DataLoaders (the very first stage) OR functions that we call later that provide torch DataLoaders (subsequent stages)
+        # From this torch DataLoaders objects we then call `sanity_check_dataloader` that will return a iterator.
+        # In short, `sanity_check_dataloader` just places the input tensors in the GPU when necessary (TensorPointers stay in the CPU)
+        #
+        # TBH, the for loop below it's just for deleting the DataLoaders of previous stages, which is not so problematic. The important part is returning the
+        # DataLoader iterator every time we call this function from the current training stage, which is tracked during training
+        #
+        # Also, keep in mind that if val_check_interval = 5 & data.start_training_step = 10 we will already perform the evaluation with the SECOND data stage
+        # after just training for the current iteration, so it might not be a good idea to set evals during the stage in which we change of data stage
+        #
+        # NOTE(tj.solergibert) Further investigation should be done, but there is a extrange behaiviour when deleting the DataLoaders////lambda functs. As they
+        # are converted into Iterators with `sanity_check_dataloader` we can't access anymore the DataLoader object to del the dataset (After first stage,
+        # in this function we locally create the DataLoder from the lambda func --> Return Iterator)
+        #
+        # Also when the gc deletes the first stage dataloader, all the `DatatroveFileDataset._f` are already None AND the `del` thing are deleting a copy of the
+        # object, not the object itself
+        #
+        # FINAL NOTE(tj.solergibert) I will open a Issue in nanotron to check with them if they are aware of this useless deletitions
+        #
         # TODO(tj.solergibert) Check the tuple case below
         from collections.abc import Generator
 
@@ -339,11 +357,11 @@ class DistributedTrainer:
             self.config.data_stages
         ), "Number of dataloaders should match the number of dataset stages"
 
-        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str):
+        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str, prev_stage_name: str):
             import gc
 
             log_rank(
-                f"[Validation Stage: {stage_name}] Clearing the previous validation stage's dataloader and dataset from memory",
+                f"[Validation Stage: {stage_name}] Clearing the previous validation stage's ({prev_stage_name}) dataloader and dataset from memory",
                 logger=logger,
                 level=logging.INFO,
             )
@@ -355,57 +373,38 @@ class DistributedTrainer:
 
             gc.collect()
 
-        dataloader = None
-
         for stage_idx, stage in enumerate(self.config.data_stages):
             if stage_idx < self.metadata.last_stage_idx:
                 continue
+            # NOTE(tj.solergibert) From this point stage_idx = self.metadata.last_stage_idx. We update self.metadata.last_stage_idx (which keeps track of the training stage)
+            #   in each and every training step.
 
             if (
                 stage_idx is not self.metadata.last_validation_stage_idx
-                and self.metadata.last_validation_stage_idx is not None
-            ):
+            ):  # When stage_idx (= self.metadata.last_stage_idx, the training stage index) is different than the last validation stage index
                 self.metadata.last_validation_stage_idx = stage_idx  # Update validation stage index
-                # Si cambiamos de stage borramo el antiguo
-                # En ambos casos recrear el que toca !!!
-                # TODO Aqui nos quedamos!!! Tenemos que borrar el anterior dataloader cuando sea necesario y hacer el sanity del current dataloader SIEMPRE
-            stage = cast(DatasetStageArgs, stage)
-            print(
-                stage.name
-            )  # TODO como actualizamos el last stage index en el training aqui estamos mirando el dataloader de la siguiente iteracion que mal por dios!!!!!
-
-            log_rank(
-                f"Ese print bueno {stage.name}",
-                logger=logger,
-                level=logging.INFO,
-                rank=0,
-            )
-            # self.metadata.last_stage_idx = stage_idx
-            """
-            if self.current_validation_dataloader is not None: # TODO Si hay algun dataloader ya lo eliminamos. Igualmente creamos de nuevo. Bueno el dataloader como tal ya esta creado, solo hay que devolver el sanity check raro
+                # Delete previous stage DataLoader
                 prev_stage_name = self.config.data_stages[stage_idx - 1].name
                 prev_dataloader = dataloaders[prev_stage_name]
 
-            if isinstance(prev_dataloader, DataLoader):
-                # NOTE: we don't need to clear dummy data generator from memory
-                clear_dataloader_from_memory(prev_dataloader, stage_name=stage.name)
-            """
-            log_rank(
-                f"Preparing validation DataLoader from stage {stage.name}",
-                logger=logger,
-                level=logging.INFO,
-                rank=0,
-            )
+                if isinstance(prev_dataloader, DataLoader):
+                    # NOTE: we don't need to clear dummy data generator from memory
+                    clear_dataloader_from_memory(
+                        prev_dataloader, stage_name=stage.name, prev_stage_name=prev_stage_name
+                    )
 
+                self.metadata.last_validation_stage_idx = stage_idx  # Update validation stage index
+
+            # NOTE(tj.solergibert) Create AGAIN the DataLoader
             dataloader = dataloaders[stage.name]
             # NOTE: if a dataloader is lazy initialized, we need to call it to initialize it
             dataloader = dataloader() if callable(dataloader) else dataloader
             break
 
-        self.current_validation_dataloader_lenght = 200  # TODO len(dataloader)
+        self.current_validation_dataloader_lenght = len(dataloader)
         self.current_validation_dataloader = sanity_check_dataloader(
             dataloader=dataloader, parallel_context=self.parallel_context, config=self.config
-        )
+        )  # NOTE(tj.solergibert) Create a Iterator from the DataLoader
 
     def _update_dataloader_based_on_training_stages(self, dataloaders: Union[List[DataLoader], DataLoader]):
         from collections.abc import Generator
@@ -431,11 +430,11 @@ class DistributedTrainer:
             self.config.data_stages
         ), "Number of dataloaders should match the number of dataset stages"
 
-        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str):
+        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str, prev_stage_name: str):
             import gc
 
             log_rank(
-                f"[Training Stage: {stage_name}] Clearing the previous training stage's dataloader and datasets from memory",
+                f"[Training Stage: {stage_name}] Clearing the previous training stage's ({prev_stage_name}) dataloader and datasets from memory",
                 logger=logger,
                 level=logging.INFO,
             )
@@ -472,7 +471,9 @@ class DistributedTrainer:
 
                     if isinstance(prev_dataloader, DataLoader):
                         # NOTE: we don't need to clear dummy data generator from memory
-                        clear_dataloader_from_memory(prev_dataloader, stage_name=stage.name)
+                        clear_dataloader_from_memory(
+                            prev_dataloader, stage_name=stage.name, prev_stage_name=prev_stage_name
+                        )
 
                 self.metadata.last_stage_idx = stage_idx
 
@@ -548,18 +549,14 @@ class DistributedTrainer:
                 # Cada validation es mucho mas largo que un training step
                 # Puede que el len valid dataloader de el numero de valid batches por lo que con eso y la batch size podemos tirar millas
                 if self.iteration_step % self.config.tokens.val_check_interval == 0:
-                    log_rank(
-                        f"KOMO???? {self.iteration_step}",
-                        logger=logger,
-                        level=logging.INFO,
-                        rank=0,
-                    )
                     self._prepare_dataloader_for_validation_stage(valid_dataloader_or_dls)
                     val_global_loss, val_lang_losses = self.validation_step(
                         dataloader=self.current_validation_dataloader
                     )
                     self.validation_step_time = time.time()
-                    self.validation_step_logs(val_global_loss, val_lang_losses)
+                    self.validation_step_logs(
+                        val_global_loss, val_lang_losses
+                    )  # TODO(tj.solergibert) Check what happens when val_check_interval % iteration_step_info_interval != 0
 
                 # Training Logs
                 # TODO(xrsrke): refactor using callbacks would be better
@@ -684,6 +681,14 @@ class DistributedTrainer:
         lang_losses = {
             lang: [] for lang in self.config.data_stages[self.metadata.last_stage_idx].data.dataset.lang_to_ids.keys()
         }
+        # WARNING(tj.solergibert) This mechanism will fail in the following [corner] case:
+        # If the lang_losses dict for a given lang IS EMPTY aka in the validation step in a Data Parallel Group
+        # we have 0 SAMPLES of a given lang, lang_losses[lang] will be a empty python list so the toch.stack call
+        # will fail with "stack expects a non-empty TensorList". I've tried setting this lang_losses[lang] to torch.empty
+        # but of course it doesn't works as we then do the average across the DP group.
+        # We will fix this issue in the future if we encounter this problem again.
+        # A bit of inspo https://blog.speechmatics.com/Sparse-All-Reduce-Part-1
+
         # Compute losses
         if isinstance(outputs[0], torch.Tensor):
             # Multilingual losses
@@ -696,9 +701,7 @@ class DistributedTrainer:
             # Sync losses across DP
             for lang in lang_losses.keys():
                 lang_losses[lang] = torch.mean(torch.stack(lang_losses[lang]))
-                dist.all_reduce(
-                    lang_losses[lang], group=self.parallel_context.dp_pg, op=dist.ReduceOp.AVG
-                )  # TODO Estas averages dan enormes porque debe de hacer el average con un solo valor!!!!!!!! Debe de set loss per batch o asi no? Sino meter en el outputs de arriba coger el "loss" y comparar a mano vamos...
+                dist.all_reduce(lang_losses[lang], group=self.parallel_context.dp_pg, op=dist.ReduceOp.AVG)
             dist.all_reduce(global_loss_avg, group=self.parallel_context.dp_pg, op=dist.ReduceOp.AVG)
         else:
             global_loss_avg = None
@@ -833,7 +836,7 @@ class DistributedTrainer:
                 ),  # , "1.6E"),
                 LogItem("validation_loss", global_loss.item(), "human_format"),  # , "1.6E"),
                 LogItem("validation_model_tflops_per_gpu", model_tflops / 3, "human_format"),  # , ".2f"),
-                LogItem("validation_hardware_tflops_per_gpu", hardware_tflops, "human_format"),  # , ".2f"),
+                LogItem("validation_hardware_tflops_per_gpu", hardware_tflops / 3, "human_format"),  # , ".2f"),
             ]
 
             # NOTE Currently you have to log each lang metric one by one and then merge them manually in the same plot through the wandb UI.

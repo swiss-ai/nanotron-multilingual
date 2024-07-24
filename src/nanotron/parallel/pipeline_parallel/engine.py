@@ -136,7 +136,7 @@ class PipelineEngine(ABC):
         nb_microbatches: int,
     ) -> Iterable[Dict[str, Union[torch.Tensor, TensorPointer]]]:
         # Assign a new state for the current batch
-        state = PipelineEvalBatchState()  # PipelineTrainBatchState()  # TODO: do i need state?
+        state = PipelineEvalBatchState()
         self.nb_microbatches = nb_microbatches
 
         outputs = []
@@ -156,21 +156,17 @@ class PipelineEngine(ABC):
                     send_activation()
 
                 # We make `output` a dict
-                # TODO convert to dict other items returned by the model (MoE aux loss for example)
-                # But in next if statement be careful if we return other items in all of the pp processes
-                # This conversion to dicts is kind of useless as the model already returns a dict with loss key. Maybe the PP ranks return TensorPointer Objects?
                 if not isinstance(output, dict):
                     output = {"loss": output}
 
                 # Store the loss for each microbatch
                 if not isinstance(output["loss"], TensorPointer):
                     output = {k: v.detach() for k, v in output.items()}
-                    # TODO ver este output que es y tambien ver en outputs como se guarda. Donde se have la media? En el training step lol
-                    # Aqui deberiamos segregar por languagues porque es el unico punto en el que tenemos la languague!! O al menos "etiquetarla" o acumularla por language
-                    # 1. Hacemos dict con key para cada idioma 2. cada key tiene una lista donde append los tensors 3. en valid step hacemos lo del stack y allreduces
-                    # Finalmente: Aqui metemos solo el lang ids, en trainer.py acumularemos los resultados y tal.
-                outputs.extend(list(output["sample_loss"]))  # TODO flatten?????? o extend??????
-                lang_ids.extend(micro_batch["input_ids"][:, 0].tolist())  # TODO esto deberia se un extend????
+
+                outputs.extend(
+                    list(output["sample_loss"])
+                )  # NOTE(tj.solergibert) Yes, it might look useless to do list + extend but it's necessary to split the output["sample_loss"] tensor into multiple tensors
+                lang_ids.extend(micro_batch["input_ids"][:, 0].tolist())
 
         return outputs, lang_ids
 

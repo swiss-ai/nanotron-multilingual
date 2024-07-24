@@ -325,8 +325,15 @@ def get_valid_dataloader(trainer: DistributedTrainer) -> Dict[str, DataLoader]:
         dataloader = (
             get_valid_dataloader_from_data_stage(trainer, stage.data)
             if stage_idx == 0
-            else lambda stage=stage: get_dataloader_from_data_stage(trainer, stage.data)
+            else lambda stage=stage: get_valid_dataloader_from_data_stage(trainer, stage.data)
         )
+        # TODO(tj.solergibert) As we are creating again the valid dataloader in every validation stage, we print multiple times
+        # the validation MultilingualNanoset info (Number of samples, etc.) [UPDATE: ]. In order to solve that, we could get rid of this lambda
+        # funcs and directly create all dataloaders.
+        #
+        # This lambda functs (Used in training too) are for creating the DataLoaders lazyly FOR 1. Start training faster instead of creating multiple DataLoaders
+        # 2. Consume less memory as the lambda func is lighter that the DataLoader object with the Dataset, collator, etc.
+        # BUT 1. The Nanoset creation process is very fast and 2. Nanosets doesn't consume any memory at all till we start sampling from the Nanoset
         dataloaders[stage.name] = dataloader
     return dataloaders
 

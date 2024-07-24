@@ -803,12 +803,7 @@ def masked_mean(loss, label_mask, dtype):
     # type: (Tensor, Tensor, torch.dtype) -> Tensor
     return (loss * label_mask).sum(dim=1, dtype=dtype) / label_mask.sum(
         dim=1
-    )  # TODO esto de entrada da float/float = float
-
-
-# TODO la loss de cada uno !!!! ((loss * label_mask).sum(dim=1, dtype=dtype) / label_mask.sum(dim=1))
-# Y pasa el assert close!!
-# assert_close(((loss * label_mask).sum(dtype=dtype) / label_mask.sum()), torch.mean((loss * label_mask).sum(dim=1, dtype=dtype) / label_mask.sum(dim=1)))
+    )  # NOTE(tj.solergibert) Added dim=1 to return a tensor with shape [Batch size, 1] instead of [1]
 
 
 class Loss(nn.Module):
