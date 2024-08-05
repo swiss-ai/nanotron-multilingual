@@ -177,5 +177,57 @@ class GPT3Config:
     def n_inner(self):
         return self.intermediate_size
 
+@dataclass
+class GPT3MoEConfig:
+    """Configuration for a GPT3 __MoE__ model"""
 
-NanotronConfigs = LlamaConfig | Starcoder2Config | GPT3Config
+    activation_function: str = "gelu"
+    attn_pdrop: float = 0.1
+    embd_pdrop: float = 0.1
+    eos_token_id: int = 49152
+    hidden_size: int = 2048
+    intermediate_size: Optional[int] = None
+    layer_norm_epsilon: float = 1e-05
+    max_position_embeddings: int = 4096
+    num_attention_heads: int = 16
+    num_hidden_layers: int = 24
+    resid_pdrop: float = 0.1
+    scale_attention_softmax_in_fp32: bool = True
+    scale_attn_weights: bool = True
+    vocab_size: int = 49280
+    sinusoidal_position_embedding: bool = True
+    position_embedding_offset: int = 2
+    use_spda: bool = False
+    act_pdrop: float = 0.0
+    scale_embedding: bool = True
+    # MoE specific
+    is_moe: bool = True
+    moe_num_experts: int = 1
+    num_experts_per_tok: int = 1
+    moe_loss_weight: float = 0.01
+    moe_z_loss_weight: float = 0.001
+
+
+    def as_gpt3(self) -> GPT3Config:
+        config = dict(**vars(self))
+
+        # Moe   
+        del config["is_moe"]
+        del config["moe_num_experts"]
+        del config["num_experts_per_tok"]
+        del config["moe_loss_weight"]
+        del config["moe_z_loss_weight"]
+
+        if "_is_using_mup" in config:
+            del config["_is_using_mup"]
+        return GPT3Config(
+            **config
+        )
+
+    @property
+    def n_inner(self):
+        return self.intermediate_size
+
+
+
+NanotronConfigs = LlamaConfig | Starcoder2Config | GPT3Config | GPT3MoEConfig
