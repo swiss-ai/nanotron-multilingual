@@ -1,5 +1,7 @@
 """  MoEs Blocks to replace MLPs in Transformers. """
 
+# TODO: implement gpt3 style MLP (currently it's only SwiGLU with 3 weight matrices)
+
 import warnings
 from functools import partial
 from typing import Optional, Tuple
