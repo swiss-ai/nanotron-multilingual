@@ -230,17 +230,31 @@ class ParallelDroplessMLP(torch.nn.Module):
         self.blocking = 128
 
         if self.experts_per_rank == 1:
-            self.mlp = MLP(
-                config=config,
-                parallel_config=parallel_config,
-                tp_pg=parallel_context.tp_pg,
-            )
+            if config.moe_glu:
+                self.mlp = GLU(
+                    config=config,
+                    parallel_config=parallel_config,
+                    tp_pg=parallel_context.tp_pg,
+                )
+            else:
+                self.mlp = MLP(
+                    config=config,
+                    parallel_config=parallel_config,
+                    tp_pg=parallel_context.tp_pg,
+                )
         else:
-            self.mlp = SparseGLU(
-                config=config,
-                parallel_config=parallel_config,
-                parallel_context=parallel_context,
-            )
+            if config.moe_glu:
+                self.mlp = SparseGLU(
+                    config=config,
+                    parallel_config=parallel_config,
+                    parallel_context=parallel_context,
+                )
+            else:
+                self.mlp = SparseMLP(
+                    config=config,
+                    parallel_config=parallel_config,
+                    parallel_context=parallel_context,
+                )
 
         max_column_index = (self.config.intermediate_size * self.num_experts) // self.blocking
         self.transpose_sort_end_bit = max(int(np.ceil(np.log2(max_column_index))), 1)
@@ -630,6 +644,26 @@ class MLP(nn.Module):
             expert_parallel_size=self.expert_pg_size,
         )
 
+        # TODO @nouamane: jit
+        self.act = ACT2FN[config.hidden_act]
+
+    def forward(self, hidden_states, topo):  # [seq_length, batch_size, hidden_dim]
+        merged_states = self.w1(hidden_states)
+        hidden_states = self.w2(self.act(merged_states))
+        return hidden_states
+
+class GLU(MLP):
+    def __init__(
+        self,
+        config: Config,
+        parallel_config: Optional[ParallelismArgs],
+        tp_pg: dist.ProcessGroup,
+    ):
+        super().__init__(config, parallel_config, tp_pg)
+        tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
+        tp_linear_async_communication = (
+            parallel_config.tp_linear_async_communication if parallel_config is not None else False
+        )
         self.w3 = ExpertParallel(
             TensorParallelColumnLinear(
                 config.hidden_size,
@@ -641,14 +675,11 @@ class MLP(nn.Module):
             ),
             expert_parallel_size=self.expert_pg_size,
         )
-        # TODO @nouamane: jit
-        self.act = ACT2FN[config.hidden_act]
 
-    def forward(self, hidden_states, topo):  # [seq_length, batch_size, hidden_dim]
+    def forward(self, x, topo):
         merged_states = self.w1(hidden_states)
         hidden_states = self.w2(self.act(merged_states) * self.w3(hidden_states))
         return hidden_states
-
 
 def inclusive_cumsum(x, dim):
     scalar = ops.inclusive_cumsum(x, dim)

@@ -206,6 +206,7 @@ class GPT3MoEConfig:
     num_experts_per_tok: int = 1
     moe_loss_weight: float = 0.01
     moe_z_loss_weight: float = 0.001
+    moe_glu: bool = False
 
 
     def as_gpt3(self) -> GPT3Config:
