@@ -81,6 +81,25 @@ class PipelineBlock(nn.Module):
                 if isinstance(tensor, TensorPointer):
                     # Current rank is neither the rank holding the data nor the rank responsible for computing block
                     continue
+                elif isinstance(tensor, dict):
+                    for k, v in tensor.items():
+                        if isinstance(v, torch.Tensor):
+                            # We need to send the tensor to the rank that actually runs the compute
+                            if self.pipeline_state is not None:
+                                send_to_pipeline_state_buffer(
+                                    v,
+                                    to_rank=self.rank,
+                                    p2p=self.p2p,
+                                    pipeline_state=self.pipeline_state,
+                                )
+                                continue
+
+                            if v.requires_grad is True:
+                                raise ValueError(
+                                    f"Pipeline engine is None and tensor requires grad. Tried sending a tensor to {self.rank}. Usually that means that your model is pipeline sharded and you haven't chosen a specific pipeline engine."
+                                )
+
+                            batch_send_recv.add_send(tensor=v, to_rank=self.rank)
                 else:
                     assert isinstance(tensor, torch.Tensor)
                     # We need to send the tensor to the rank that actually runs the compute
