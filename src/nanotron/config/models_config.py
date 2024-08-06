@@ -177,6 +177,7 @@ class GPT3Config:
     def n_inner(self):
         return self.intermediate_size
 
+
 @dataclass
 class GPT3MoEConfig:
     """Configuration for a GPT3 __MoE__ model"""
@@ -208,27 +209,51 @@ class GPT3MoEConfig:
     moe_z_loss_weight: float = 0.001
     moe_glu: bool = False
 
-
     def as_gpt3(self) -> GPT3Config:
         config = dict(**vars(self))
 
-        # Moe   
+        # Moe
         del config["is_moe"]
         del config["moe_num_experts"]
         del config["num_experts_per_tok"]
         del config["moe_loss_weight"]
         del config["moe_z_loss_weight"]
+        del config["moe_glu"]
 
         if "_is_using_mup" in config:
             del config["_is_using_mup"]
-        return GPT3Config(
-            **config
+        return GPT3Config(**config)
+
+    def as_starcoder2(self) -> Starcoder2Config:
+        # same as gpt3 conversion above
+        config = dict(**vars(self))
+        del config["sinusoidal_position_embedding"]
+        del config["use_spda"]
+        del config["position_embedding_offset"]
+        del config["act_pdrop"]
+        del config["scale_embedding"]
+
+        # Moe
+        del config["is_moe"]
+        del config["moe_num_experts"]
+        del config["num_experts_per_tok"]
+        del config["moe_loss_weight"]
+        del config["moe_z_loss_weight"]
+        del config["moe_glu"]
+
+        if "_is_using_mup" in config:
+            del config["_is_using_mup"]
+        return Starcoder2Config(
+            grouped_query=True, num_kv_heads=self.num_attention_heads, use_rotary_embeddings=False, **config
         )
 
     @property
     def n_inner(self):
         return self.intermediate_size
 
+    @property
+    def hidden_act(self):
+        return self.activation_function
 
 
 NanotronConfigs = LlamaConfig | Starcoder2Config | GPT3Config | GPT3MoEConfig

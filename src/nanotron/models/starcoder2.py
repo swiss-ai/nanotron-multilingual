@@ -1517,6 +1517,13 @@ class Starcoder2ForTraining(NanotronModel):
                     module.bias.zero_()
                 else:
                     raise ValueError(f"Who the fuck is {param_name}?")
+            elif isinstance(module, nn.Linear):
+                if "weight" == param_name:
+                    nn.init.normal_(module.weight, mean=0.0, std=std)
+                elif "bias" == param_name:
+                    module.bias.zero_()
+                else:
+                    raise ValueError(f"Who the fuck is {param_name}?")
             elif isinstance(module, TensorParallelRowLinear):
                 if "weight" == param_name:
                     nn.init.normal_(module.weight, mean=0.0, std=sigma / math.sqrt(2 * num_layers))

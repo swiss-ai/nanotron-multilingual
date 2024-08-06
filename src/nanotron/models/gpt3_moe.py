@@ -1,33 +1,30 @@
 """PyTorch GPT-3 MoE model."""
 
-import math
 from contextlib import contextmanager
 from typing import Dict, Optional, Union
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 
 from nanotron import distributed as dist
-from nanotron.config import GPT3MoEConfig, ParallelismArgs, GPT3Config
-from nanotron.generation.generate_store import AttachableStore
+from nanotron.config import GPT3Config, GPT3MoEConfig, ParallelismArgs
 from nanotron.models import gpt3
+from nanotron.models.gpt3 import CausalSelfAttention, GPT3ForTraining, GPT3Model, dropout_add_fused_train
+from nanotron.models.gpt3 import GPTBlock as GPT3Block
 from nanotron.models.moe import (
     dMoE,
 )
-from nanotron.models.gpt3 import CausalSelfAttention, GPTModel, PositionEmbedding, dropout_add_fused_train, GPT3ForTraining
-from nanotron.models.gpt3 import GPTBlock as GPT3Block
 from nanotron.nn.layer_norm import TritonLayerNorm
 from nanotron.parallel import ParallelContext
 from nanotron.parallel.pipeline_parallel.block import PipelineBlock
 from nanotron.parallel.pipeline_parallel.tensor_pointer import TensorPointer
 from nanotron.parallel.tensor_parallel.enum import TensorParallelLinearMode
-from nanotron.parallel.tensor_parallel.nn import TensorParallelColumnLinear, TensorParallelEmbedding
+from nanotron.parallel.tensor_parallel.nn import TensorParallelColumnLinear
 from nanotron.random import RandomStates, branch_random_state
 
 
 @contextmanager
-def replace_decoder(gpt3config: GPT3MoEConfig):
+def replace_moe_decoder(gpt3config: GPT3MoEConfig):
     orig = gpt3.PipelineBlock
     try:
 
@@ -37,7 +34,7 @@ def replace_decoder(gpt3config: GPT3MoEConfig):
                 # Let's return a PipelineBlock with a GPT3Block instead.
                 # This also requires to replace starcoders2's config with gpt3's config.
                 module_kwargs["config"] = gpt3config
-                return orig(module_builder=GPTBlock, module_kwargs=module_kwargs, **kwargs)
+                return orig(module_builder=GPT3MoEBlock, module_kwargs=module_kwargs, **kwargs)
             # Else, they are setting up other modules, which we also want unchanged.
             return orig(module_builder=module_builder, module_kwargs=module_kwargs, **kwargs)
 
@@ -48,11 +45,11 @@ def replace_decoder(gpt3config: GPT3MoEConfig):
 
 
 @contextmanager
-def replace_gpt3model(gpt3moeconfig: GPT3MoEConfig):
-    orig = gpt3.GPTModel
+def replace_gpt3_moe_model(gpt3moeconfig: GPT3MoEConfig):
+    orig = gpt3.GPT3Model
     try:
 
-        def create_gptmodel(
+        def create_moe_model(
             config: GPT3Config,
             parallel_context: ParallelContext,
             parallel_config: Optional[ParallelismArgs],
@@ -60,12 +57,13 @@ def replace_gpt3model(gpt3moeconfig: GPT3MoEConfig):
         ):
             return GPT3MoEModel(gpt3moeconfig, parallel_context, parallel_config, random_states)
 
-        gpt3.GPTModel = create_gptmodel
+        gpt3.GPT3Model = create_moe_model
         yield
     finally:
-        gpt3.GPTModel = orig
+        gpt3.GPT3Model = orig
 
-class GPTBlock(nn.Module):
+
+class GPT3MoEBlock(nn.Module):
     def __init__(
         self,
         config: GPT3MoEConfig,
@@ -75,7 +73,7 @@ class GPTBlock(nn.Module):
         random_states: RandomStates,
         layer_idx: int,
     ):
-        super(GPTBlock, self).__init__()
+        super(GPT3MoEBlock, self).__init__()
         self.ln_1 = TritonLayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
         self.attn = CausalSelfAttention(
             config=config, parallel_config=parallel_config, tp_pg=tp_pg, layer_idx=layer_idx
@@ -83,17 +81,16 @@ class GPTBlock(nn.Module):
         self.attn_dropout = config.attn_pdrop
 
         self.ln_2 = TritonLayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
-        
+
         self.ff = dMoE(
-                config=config,
-                parallel_config=parallel_config,
-                parallel_context=parallel_context,
+            config=config,
+            parallel_config=parallel_config,
+            parallel_context=parallel_context,
         )
         self.ff_dropout = config.resid_pdrop
         self.random_states = random_states
         self.tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
 
-        
     def forward(
         self,
         hidden_states: torch.Tensor | TensorPointer,
@@ -135,13 +132,10 @@ class GPTBlock(nn.Module):
             # No need for random state context manager
             hidden_states = hidden_states + residual
 
-        return {
-            "hidden_states": hidden_states,
-            "sequence_mask": output["sequence_mask"],
-            "aux_losses": aux_losses
-        }
+        return {"hidden_states": hidden_states, "sequence_mask": output["sequence_mask"], "aux_losses": aux_losses}
 
-class GPT3MoEModel(GPTModel):
+
+class GPT3MoEModel(GPT3Model):
     def __init__(
         self,
         config: GPT3MoEConfig,
@@ -149,15 +143,15 @@ class GPT3MoEModel(GPTModel):
         parallel_config: Optional[ParallelismArgs],
         random_states: RandomStates,
     ):
-        with replace_decoder(config):
+        with replace_moe_decoder(config):
             super().__init__(config.as_gpt3(), parallel_context, parallel_config, random_states)
-        
+
         # need to adapt the decoder list because we pass the aux_losses around
         self.decoder = nn.ModuleList(
             [
                 PipelineBlock(
                     p2p=self.p2p,
-                    module_builder=GPTBlock,
+                    module_builder=GPT3MoEBlock,
                     module_kwargs={
                         "config": config,
                         "parallel_config": parallel_config,
@@ -172,6 +166,7 @@ class GPT3MoEModel(GPTModel):
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
+
     def forward(
         self,
         input_ids: torch.Tensor | TensorPointer,  # [batch_size, seq_length]
@@ -204,7 +199,7 @@ class GPT3MoEModel(GPTModel):
 
         fp32_sharded_logits = self.cast_to_fp32(x=sharded_logits)["output"]
 
-        return fp32_sharded_logits, hidden_encoder_states["aux_losses"]
+        return {"sharded_logits": fp32_sharded_logits, "aux_losses": hidden_encoder_states["aux_losses"]}
 
 
 class GPT3MoEForTraining(GPT3ForTraining):
@@ -215,7 +210,7 @@ class GPT3MoEForTraining(GPT3ForTraining):
         parallel_config: Optional[ParallelismArgs],
         random_states: RandomStates,
     ):
-        with replace_gpt3model(config):
+        with replace_gpt3_moe_model(config):
             super().__init__(config.as_gpt3(), parallel_context, parallel_config, random_states)
         self.config = config
 
@@ -249,29 +244,31 @@ class GPT3MoEForTraining(GPT3ForTraining):
             label_ids=label_ids,
             label_mask=label_mask,
         )
-        
-        if isinstance(output['aux_losses'], dict):
+
+        if isinstance(output["aux_losses"], dict):
             for key, value in output["aux_losses"].items():
                 loss[key] = value
         return loss
-    
+
     def get_block_compute_costs(self):
         """Computes the compute cost of each block in the model so that we can do a better job of load balancing."""
         model_config = self.config
         d_ff = model_config.n_inner if model_config.intermediate_size is not None else 4 * model_config.hidden_size
         d_qkv = model_config.hidden_size // model_config.num_attention_heads
         # active experts + routing
-        mlp_cost = 2 * d_ff * model_config.hidden_size * model_config.num_experts_per_tok \
+        mlp_cost = (
+            2 * d_ff * model_config.hidden_size * model_config.num_experts_per_tok
             + model_config.hidden_size * model_config.moe_num_experts
+        )
         att_cost = 4 * model_config.num_attention_heads * d_qkv * model_config.hidden_size
         block_compute_costs = {
             # CausalSelfAttention (qkv proj + attn out) + MLP
-            GPTBlock: att_cost + mlp_cost,
+            GPT3MoEBlock: att_cost + mlp_cost,
             # This is the last lm_head
             TensorParallelColumnLinear: model_config.vocab_size * model_config.hidden_size,
         }
         return block_compute_costs
-    
+
     def get_flops_per_sec(self, iteration_time_in_sec, sequence_length, global_batch_size):
         """Get flops per second for a given model"""
         world_size = self.parallel_context.world_pg.size()
@@ -291,7 +288,7 @@ class GPT3MoEForTraining(GPT3ForTraining):
         model_flops_per_s = model_flops / (iteration_time_in_sec * world_size * 1e12)
         hardware_flops_per_s = hardware_flops / (iteration_time_in_sec * world_size * 1e12)
         return model_flops_per_s, hardware_flops_per_s
-    
+
 
 def get_flops(
     num_layers,
