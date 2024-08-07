@@ -733,14 +733,20 @@ class LlamaModel(nn.Module):
         self,
         input_ids: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
         input_mask: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
+        lang_code: Union[torch.Tensor, TensorPointer],  # [batch_size, 1]
     ):
-        return self.forward_with_hidden_states(input_ids=input_ids, input_mask=input_mask)[0]
+        return self.forward_with_hidden_states(input_ids=input_ids, input_mask=input_mask, lang_code=lang_code)[0]
 
     def forward_with_hidden_states(
         self,
         input_ids: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
         input_mask: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
+        lang_code: Union[torch.Tensor, TensorPointer],  # [batch_size, 1]
     ):
+        # NOTE(tj.solergibert) I bring `lang_code` till the forward of LlamaModel. Remember that
+        # to use it in the different pipeline blocks you need to also set the module_input_keys & module_output_keys
+        # of the necessary `PipelineBlock`'s defined in the LlamaModel init!
+
         # all tensors are optional as most ranks don't need anything from the dataloader.
 
         output = self.token_position_embeddings(input_ids=input_ids, input_mask=input_mask)
@@ -863,12 +869,14 @@ class LlamaForTraining(NanotronModel):
         self,
         input_ids: Union[torch.Tensor, TensorPointer],
         input_mask: Union[torch.Tensor, TensorPointer],
+        lang_code: Union[torch.Tensor, TensorPointer],
         label_ids: Union[torch.Tensor, TensorPointer],
         label_mask: Union[torch.Tensor, TensorPointer],
     ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
         sharded_logits = self.model(
             input_ids=input_ids,
             input_mask=input_mask,
+            lang_code=lang_code,
         )
         outputs = self.loss(
             sharded_logits=sharded_logits,

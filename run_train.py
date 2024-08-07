@@ -194,7 +194,6 @@ def get_dataloader_from_data_stage(
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
                 train_split_num_samples=trainer.config.tokens.train_steps * trainer.global_batch_size,
-                dataset_tokens=data.dataset.dataset_tokens,
                 random_seed=data.seed,
             )
 
@@ -209,6 +208,7 @@ def get_dataloader_from_data_stage(
             consumed_train_samples=consumed_train_samples,
             dataloader_num_workers=data.num_loading_workers,
             dataloader_drop_last=True,
+            is_multilingual=True,
         )
 
         return train_dataloader
@@ -241,7 +241,6 @@ def get_valid_dataloader_from_data_stage(
                 dataset_folders=data.dataset.validation_folder,
                 sequence_length=trainer.sequence_length,
                 token_size=token_size,
-                dataset_tokens=data.dataset.dataset_tokens,
                 is_valid=True,
                 random_seed=data.seed,
             )
@@ -257,6 +256,7 @@ def get_valid_dataloader_from_data_stage(
             dataloader_num_workers=data.num_loading_workers,
             dataloader_drop_last=True,
             shuffle=True,
+            is_multilingual=True,
         )
 
         return valid_dataloader

@@ -80,6 +80,7 @@ from nanotron.random import set_random_seed
 from nanotron.sanity_checks import (
     after_optim_step_sanity_checks,
     after_tbi_sanity_checks,
+    assert_tensor_synced_across_pg,
     before_optim_step_sanity_checks,
     before_tbi_sanity_checks,
 )
@@ -667,37 +668,54 @@ class DistributedTrainer:
         return outputs, loss_avg
 
     def validation_step(self, dataloader: Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]]) -> Iterable[Dict]:
-        outputs, lang_ids = self.pipeline_engine.validate_batch_iter(
+        outputs, lang_codes = self.pipeline_engine.validate_batch_iter(
             model=self.model,
             batch=(next(dataloader) for _ in range(self.current_validation_dataloader_lenght)),
             nb_microbatches=self.current_validation_dataloader_lenght,
         )
 
         lang_losses = {
-            lang: [] for lang in self.config.data_stages[self.metadata.last_stage_idx].data.dataset.lang_to_ids.keys()
+            lang: [] for lang in self.config.data_stages[self.metadata.last_stage_idx].data.dataset.languages
         }
-        # WARNING(tj.solergibert) This mechanism will fail in the following [corner] case:
-        # If the lang_losses dict for a given lang IS EMPTY aka in the validation step in a Data Parallel Group
-        # we have 0 SAMPLES of a given lang, lang_losses[lang] will be a empty python list so the toch.stack call
-        # will fail with "stack expects a non-empty TensorList". I've tried setting this lang_losses[lang] to torch.empty
-        # but of course it doesn't works as we then do the average across the DP group.
-        # We will fix this issue in the future if we encounter this problem again.
-        # A bit of inspo https://blog.speechmatics.com/Sparse-All-Reduce-Part-1
+        lang_losses_list = list(lang_losses.keys())
 
         # Compute losses
         if isinstance(outputs[0], torch.Tensor):
             # Multilingual losses
-            for loss, lang_id in zip(outputs, lang_ids):
-                lang_losses[
-                    self.config.data_stages[self.metadata.last_stage_idx].data.dataset.ids_to_lang[lang_id]
-                ].append(loss)
+            for loss, lang_code in zip(outputs, lang_codes):
+                lang_losses[lang_losses_list[lang_code]].append(loss)
             # Global loss
             global_loss_avg = torch.mean(torch.stack(outputs))
-            # Sync losses across DP
+            # Sync multilingual losses across DP
             for lang in lang_losses.keys():
-                lang_losses[lang] = torch.mean(torch.stack(lang_losses[lang]))
-                dist.all_reduce(lang_losses[lang], group=self.parallel_context.dp_pg, op=dist.ReduceOp.AVG)
+                if not lang_losses[
+                    lang
+                ]:  # If the list is empty --> Set local language loss to -1 to exclude it from the global computation
+                    lang_losses[lang] = torch.tensor(-1, dtype=torch.float32)
+                else:  # If we have at least 1 loss from a given language --> compute local language loss mean
+                    lang_losses[lang] = torch.mean(torch.stack(lang_losses[lang]))
+
+            # NOTE(tj.solergibert) We create a (DP SIZE, LANGS) tensor to aggregate ALL local losses across DP groups.
+            #   Then we compute the mean of each lang in each and every rank and finally copy back the result to the
+            #   `lang_losses` dict for logging
+            lang_losses_tensor_out = torch.zeros(
+                (self.parallel_context.dp_pg.size(), len(lang_losses.keys())), dtype=torch.float, device="cuda"
+            )  # (DP SIZE, LANGS)
+            lang_losses_tensor_local = torch.stack(list(lang_losses.values())).unsqueeze(0)  # (1, LANGS)
+            dist.all_gather_into_tensor(lang_losses_tensor_out, lang_losses_tensor_local, self.parallel_context.dp_pg)
+            mask = lang_losses_tensor_out != -1
+            lang_losses_tensor_local = (lang_losses_tensor_out * mask).sum(dim=0) / mask.sum(dim=0)  # (1, LANGS)
+            for idx, lang in enumerate(lang_losses.keys()):
+                lang_losses[lang] = lang_losses_tensor_local[idx]
+
+            # Sync global losses across DP
             dist.all_reduce(global_loss_avg, group=self.parallel_context.dp_pg, op=dist.ReduceOp.AVG)
+
+            # TODO(tj.solergibert) Delete this testing assertions
+            for lang in lang_losses.keys():
+                assert_tensor_synced_across_pg(tensor=lang_losses[lang], pg=self.parallel_context.dp_pg)
+            assert_tensor_synced_across_pg(tensor=global_loss_avg, pg=self.parallel_context.dp_pg)
+
         else:
             global_loss_avg = None
             lang_losses = None

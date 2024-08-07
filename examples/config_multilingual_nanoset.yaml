@@ -8,17 +8,17 @@ data_stages:
 - data:
     dataset:
       training_folder:
-        datasets/c4-es/train: 0.85
-        datasets/c4-en/train: 0.05
-        datasets/c4-fr/train: 0.1
+      - datasets/c4-es/train
+      - datasets/c4-en/train
+      - datasets/c4-fr/train
       validation_folder:
       - datasets/c4-es/validation
       - datasets/c4-en/validation
       - datasets/c4-fr/validation
-      lang_to_ids:
-        es: 128002
-        en: 128003
-        fr: 128004
+      languages:
+      - es
+      - en
+      - fr
     num_loading_workers: 1
     seed: 42
   name: General purpose training (Blended dataset)
@@ -29,12 +29,12 @@ data_stages:
       - datasets/c4-es/train
       validation_folder:
       - datasets/c4-es/validation
-      lang_to_ids:
-        es: 128002
+      languages:
+      - es
     num_loading_workers: 1
     seed: 42
   name: Second purpose training (Single dataset)
-  start_training_step: 100
+  start_training_step: 1000
 - data:
     dataset:
       training_folder:
@@ -45,20 +45,19 @@ data_stages:
       - datasets/c4-es/validation
       - datasets/c4-en/validation
       - datasets/c4-fr/validation
-      lang_to_ids:
-        es: 128002
-        en: 128003
-        fr: 128004
-
+      languages:
+      - es
+      - en
+      - fr
     num_loading_workers: 1
     seed: 42
   name: Third purpose training (>1 dataset)
-  start_training_step: 200
+  start_training_step: 2000
 general:
   benchmark_csv_path: null
   consumed_train_samples: null
   ignore_sanity_checks: true
-  project: Multilingual
+  project: MultilingualV2
   run: llama
   seed: 42
   step: null
@@ -114,7 +113,7 @@ optimizer:
   weight_decay: 0.01
   zero_stage: 0
 parallelism:
-  dp: 1
+  dp: 2
   expert_parallel_size: 1
   pp: 1
   pp_engine: 1f1b
@@ -132,5 +131,5 @@ tokens:
   limit_val_batches: 10
   micro_batch_size: 3
   sequence_length: 4096
-  train_steps: 800
-  val_check_interval: 50
+  train_steps: 500
+  val_check_interval: 100

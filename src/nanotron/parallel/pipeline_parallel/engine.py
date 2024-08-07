@@ -140,7 +140,7 @@ class PipelineEngine(ABC):
         self.nb_microbatches = nb_microbatches
 
         outputs = []
-        lang_ids = []
+        lang_codes = []
 
         with attach_pipeline_state_to_model(model=model, pipeline_state=state):
             # All forward
@@ -166,9 +166,9 @@ class PipelineEngine(ABC):
                 outputs.extend(
                     list(output["sample_loss"])
                 )  # NOTE(tj.solergibert) Yes, it might look useless to do list + extend but it's necessary to split the output["sample_loss"] tensor into multiple tensors
-                lang_ids.extend(micro_batch["input_ids"][:, 0].tolist())
+                lang_codes.extend(micro_batch["lang_code"].flatten().tolist())
 
-        return outputs, lang_ids
+        return outputs, lang_codes
 
 
 class AllForwardAllBackwardPipelineEngine(PipelineEngine):
