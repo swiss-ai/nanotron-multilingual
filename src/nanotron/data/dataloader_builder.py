@@ -1,6 +1,6 @@
 import nanotron.distributed as dist
 from nanotron import logging
-from nanotron.data.collator import NanosetDataCollatorForCLM
+from nanotron.data.collator import MultilingualNanosetDataCollatorForCLM, NanosetDataCollatorForCLM
 from nanotron.dataloader import (
     EmptyInfiniteDataset,
     get_dataloader_worker_init,
@@ -20,9 +20,11 @@ def build_nanoset_dataloader(
     output_pp_rank: int,
     micro_batch_size: int,
     dataloader_num_workers: int,
+    is_multilingual: bool = False,
     consumed_train_samples: int = 0,
     dataloader_drop_last: bool = True,
     dataloader_pin_memory: bool = True,
+    shuffle: bool = False,
 ) -> DataLoader:
 
     # Case of ranks not requiring data. We give them a dummy dataset, then the collator will do his job
@@ -39,6 +41,14 @@ def build_nanoset_dataloader(
         parallel_context=parallel_context,
     )
 
+    if is_multilingual:
+        data_collator = MultilingualNanosetDataCollatorForCLM(
+            sequence_length=sequence_length,
+            input_pp_rank=input_pp_rank,
+            output_pp_rank=output_pp_rank,
+            parallel_context=parallel_context,
+        )
+
     # Compute size and rank of dataloader workers
     dp_ranks_size = parallel_context.dp_pg.size()
     dp_rank = parallel_context.dp_pg.rank()
@@ -49,7 +59,7 @@ def build_nanoset_dataloader(
         dl_rank=dp_rank,
         drop_last=dataloader_drop_last,
         consumed_train_samples=consumed_train_samples,
-        shuffle=False,
+        shuffle=shuffle,
     )
 
     return DataLoader(

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List
 
 import torch
+
 from nanotron import distributed as dist
 from nanotron import logging
 from nanotron.logging import log_rank
@@ -202,6 +203,9 @@ class PipelineEvalBatchState(PipelineBatchState):
     microbatches_activations_to_send = collections.deque()
     microbatches_activations_to_recv = collections.deque()
     activations_buffer = collections.deque()
+
+    # Reinitialise counter
+    nb_forwards = 0
 
     def register_activation_requiring_backward(self, activation: torch.Tensor):
         pass

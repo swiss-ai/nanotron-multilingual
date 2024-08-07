@@ -52,10 +52,6 @@ def all_gather_into_tensor(  # pylint: disable=function-redefined
     if group is None:
         group = dist.torch_dist.distributed_c10d._get_default_group()
 
-    assert (
-        group.size() > 1
-    ), "You should probably not call `all_gather_into_tensor` with a single rank, as it copies data over"
-
     if torch_version_above_1_13:
         return dist.all_gather_into_tensor(
             output_tensor=output_tensor, input_tensor=input_tensor, group=group, async_op=async_op

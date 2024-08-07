@@ -46,6 +46,8 @@ class TrainingMetadata:
     last_stage_idx: Optional[int] = None
     data_stages: Optional[List[DataStageMetadata]] = None
 
+    last_validation_stage_idx: Optional[int] = None
+
     def __post_init__(self):
         # NOTE: this is a sanity check after loading a trained checkpoint
         total_consumed_samples_across_stages = sum(stage.consumed_train_samples for stage in self.data_stages)
