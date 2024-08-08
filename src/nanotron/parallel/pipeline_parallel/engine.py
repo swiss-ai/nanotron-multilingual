@@ -47,14 +47,18 @@ class PipelineEngine(ABC):
         if not isinstance(output, dict):
             output = {"loss": output}
 
-        # We normalize our loss
-        if not isinstance(output["loss"], TensorPointer):
-            output["loss"] = output["loss"] / self.nb_microbatches
+        for k, v in output.items():
+            if not isinstance(v, TensorPointer):
+                output[k] = v / self.nb_microbatches
 
-        # Add output as activations that require backward pass
-        if not isinstance(output["loss"], TensorPointer):
-            assert output["loss"].requires_grad
-            state.register_activation_requiring_backward(output["loss"])
+        # the outputs are either
+        # - token prediction loss ["loss"]
+        # - auxiliary losses ["load_balancing_loss", "z_loss"]
+        # that we need to backpropagate through, so register activations
+        for loss_key, output_tensor in output.items():
+            if not isinstance(output_tensor, TensorPointer):
+                assert output_tensor.requires_grad
+                state.register_activation_requiring_backward(output_tensor)
         return output
 
     @staticmethod
@@ -154,7 +158,7 @@ class PipelineEngine(ABC):
                 if not isinstance(output, dict):
                     output = {"loss": output}
 
-                # Store the loss for each microbatch
+                # Store the loss(es) for each microbatch
                 if not isinstance(output["loss"], TensorPointer):
                     output = {k: v.detach() for k, v in output.items()}
                 outputs.append(output)
@@ -269,8 +273,9 @@ class OneForwardOneBackwardPipelineEngine(PipelineEngine):
                     send_activation()
 
                 # Store the loss for each microbatch
-                if not isinstance(output["loss"], TensorPointer):
-                    output = {k: v.detach() for k, v in output.items()}
+                for k, v in output.items():
+                    if not isinstance(v, TensorPointer):
+                        output[k] = v.detach()
                 outputs.append(output)
 
             for micro_batch in batch:
@@ -282,8 +287,9 @@ class OneForwardOneBackwardPipelineEngine(PipelineEngine):
                     output = {"loss": output}
 
                 # Store the loss for each microbatch
-                if not isinstance(output["loss"], TensorPointer):
-                    output = {k: v.detach() for k, v in output.items()}
+                for k, v in output.items():
+                    if not isinstance(v, TensorPointer):
+                        output[k] = v.detach()
                 outputs.append(output)
 
                 # One backward
