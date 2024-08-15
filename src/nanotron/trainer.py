@@ -455,7 +455,7 @@ class DistributedTrainer:
 
     def training_step(
         self, dataloader: Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]]
-    ) -> Tuple[Iterable[Dict], Optional[torch.Tensor]]:
+    ) -> Tuple[Iterable[Dict], Optional[Dict[str, torch.Tensor]]]:
         before_tbi_sanity_checks(self.config, self.parallel_context, self.unwrapped_model, self.grad_accumulator)
 
         if self.iteration_step < 5:
@@ -522,11 +522,19 @@ class DistributedTrainer:
         # Compute DP average loss and overlap with optimizer step
         if isinstance(outputs[0]["loss"], torch.Tensor):
             # This is an average on only one data rank.
-            loss_avg = torch.stack(
-                [output["loss"] for output in outputs]
-            ).sum()  # already divided by n_micro_batches_per_batch
-            # sync loss across DP
-            handle = dist.all_reduce(loss_avg, group=self.parallel_context.dp_pg, async_op=True, op=dist.ReduceOp.AVG)
+            loss_avg = {}
+            for k in outputs[0].keys():
+                if k == "loss":
+                    loss_avg["lm_loss"] = torch.stack([output[k] for output in outputs]).sum()
+                    k = "lm_loss"
+                else:
+                    loss_avg[k] = torch.stack([output[k] for output in outputs]).mean()
+                handle = dist.all_reduce(
+                    loss_avg[k],
+                    group=self.parallel_context.dp_pg,
+                    async_op=True,
+                    op=dist.ReduceOp.AVG,
+                )
         else:
             loss_avg = None
             handle = None
@@ -558,7 +566,7 @@ class DistributedTrainer:
     def train_step_logs(
         self,
         outputs: Iterable[Dict[str, Union[torch.Tensor, TensorPointer]]],
-        loss_avg: Optional[torch.Tensor],
+        loss_avg: Optional[Dict[str, torch.Tensor]],
     ) -> None:
         # TODO @nouamanetazi: Megatron-LM seems to be using a barrier to report their interval time. Check if this is necessary. https://github.com/NouamaneTazi/Megatron-LM/blob/e241a96c3085b18e36c6cee1d68a8155de77b5a6/megatron/training.py#L607
         dist.barrier()
@@ -591,11 +599,14 @@ class DistributedTrainer:
                     "tokens_per_sec_per_gpu", tokens_per_sec / self.parallel_context.world_pg.size(), "human_format"
                 ),  # , "1.6E"),
                 LogItem("global_batch_size", self.global_batch_size, "human_format"),  # , "5d"),
-                LogItem("lm_loss", loss_avg.item(), "human_format"),  # , "1.6E"),
                 LogItem("lr", lr, "human_format"),  # , ".3E"),
                 LogItem("model_tflops_per_gpu", model_tflops, "human_format"),  # , ".2f"),
                 LogItem("hardware_tflops_per_gpu", hardware_tflops, "human_format"),  # , ".2f"),
             ]
+
+            if loss_avg is not None:
+                for k, v in loss_avg.items():
+                    log_entries.append(LogItem(k, v.item(), "human_format"))
 
             if self.config.optimizer.clip_grad is not None:
                 log_entries.append(LogItem("grad_norm", self.grad_norm_unclipped.item(), "human_format"))  # , ".3f"))
