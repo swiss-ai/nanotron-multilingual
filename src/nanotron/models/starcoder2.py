@@ -56,6 +56,7 @@ from nanotron.parallel.tensor_parallel.nn import (
 from nanotron.parallel.tied_parameters import tie_parameters
 from nanotron.random import RandomStates, branch_random_state
 from nanotron.utils import checkpoint_method
+from nanotron.models.moe import ParallelDroplessMLP, SparseMLP
 
 
 def pad_to_right(tensor, mask, new_tensor=None):
@@ -1524,6 +1525,9 @@ class Starcoder2ForTraining(NanotronModel):
                     module.bias.zero_()
                 else:
                     raise ValueError(f"Who the fuck is {param_name}?")
+            elif isinstance(module, ParallelDroplessMLP):
+                if hasattr(module, 'bias'):
+                    module.bias.zero_()
             elif isinstance(module, TensorParallelRowLinear):
                 if "weight" == param_name:
                     nn.init.normal_(module.weight, mean=0.0, std=sigma / math.sqrt(2 * num_layers))
