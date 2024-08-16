@@ -81,6 +81,7 @@ from nanotron.random import set_random_seed
 from nanotron.sanity_checks import (
     after_optim_step_sanity_checks,
     after_tbi_sanity_checks,
+    assert_tensor_synced_across_pg,
     before_optim_step_sanity_checks,
     before_tbi_sanity_checks,
 )
@@ -233,7 +234,11 @@ class DistributedTrainer:
                 for stage in self.config.data_stages
             ]
             self.metadata: TrainingMetadata = TrainingMetadata(
-                consumed_train_samples=0, last_train_step=0, last_stage_idx=0, data_stages=data_stages
+                consumed_train_samples=0,
+                last_train_step=0,
+                last_stage_idx=0,
+                data_stages=data_stages,
+                last_validation_stage_idx=0,
             )
 
         # Setup tensorboard write and log writers on output rank
@@ -255,6 +260,8 @@ class DistributedTrainer:
         self.limit_val_batches = self.config.tokens.limit_val_batches
         # NOTE: the dataloader currently in use for the current training stage
         self.current_dataloader: Optional[DataLoader] = None
+        # NOTE: the dataloader currently in use for the current validation stage
+        self.current_validation_dataloader: Optional[DataLoader] = None
 
         self.post_init()
 
@@ -302,6 +309,106 @@ class DistributedTrainer:
             )
             log_rank(full_log_message, logger=logger, level=logging.INFO, rank=0)
 
+    def _prepare_dataloader_for_validation_stage(self, dataloaders: Union[List[DataLoader], DataLoader]):
+        # NOTE(tj.solergibert) Similar to _update_dataloader_based_on_training_stages BUT:
+        #   1. We call this function EVERY TIME we run the validation loop
+        #   2. Every time it returns a NEW validation iterator DataLoader. If you don't do this you'll consume the whole validation dataset
+        #       in the first iteration and subsequent validations will fail
+        # `dataloaders` are either torch DataLoaders (the very first stage) OR functions that we call later that provide torch DataLoaders (subsequent stages)
+        # From this torch DataLoaders objects we then call `sanity_check_dataloader` that will return a iterator.
+        # In short, `sanity_check_dataloader` just places the input tensors in the GPU when necessary (TensorPointers stay in the CPU)
+        #
+        # TBH, the for loop below it's just for deleting the DataLoaders of previous stages, which is not so problematic. The important part is returning the
+        # DataLoader iterator every time we call this function from the current training stage, which is tracked during training
+        #
+        # Also, keep in mind that if val_check_interval = 5 & data.start_training_step = 10 we will already perform the evaluation with the SECOND data stage
+        # after just training for the current iteration, so it might not be a good idea to set evals during the stage in which we change of data stage
+        #
+        # NOTE(tj.solergibert) Further investigation should be done, but there is a extrange behaiviour when deleting the DataLoaders////lambda functs. As they
+        # are converted into Iterators with `sanity_check_dataloader` we can't access anymore the DataLoader object to del the dataset (After first stage,
+        # in this function we locally create the DataLoder from the lambda func --> Return Iterator)
+        #
+        # Also when the gc deletes the first stage dataloader, all the `DatatroveFileDataset._f` are already None AND the `del` thing are deleting a copy of the
+        # object, not the object itself
+        #
+        # FINAL NOTE(tj.solergibert) I will open a Issue in nanotron to check with them if they are aware of this useless deletitions
+        #
+        # TODO(tj.solergibert) Check the tuple case below
+        from collections.abc import Generator
+
+        if not hasattr(self.config, "data_stages") or self.config.data_stages is None:
+
+            if isinstance(dataloaders, tuple):  # TODO(tj.solergibert) Check this tuple case
+                dataloader = dataloaders[0]
+            else:
+                dataloader = dataloaders
+
+            self.current_validation_dataloader_length = min(len(dataloader), self.limit_val_batches)
+            self.current_validation_dataloader = sanity_check_dataloader(
+                dataloader=dataloader, parallel_context=self.parallel_context, config=self.config
+            )
+
+            return
+        elif isinstance(dataloaders, Generator):
+            # TODO(xrsrke): this is a hacky way to handle DoReMi's dataloader
+            # remove this in the next PR
+            self.current_validation_dataloader = dataloaders
+            return
+
+        assert len(dataloaders) > 0, "No dataloaders provided"
+        assert len(dataloaders) == len(
+            self.config.data_stages
+        ), "Number of dataloaders should match the number of dataset stages"
+
+        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str, prev_stage_name: str):
+            import gc
+
+            log_rank(
+                f"[Validation Stage: {stage_name}] Clearing the previous validation stage's ({prev_stage_name}) dataloader and dataset from memory",
+                logger=logger,
+                level=logging.INFO,
+            )
+
+            # NOTE: Clear dataloader from memory
+            del dataloader.dataset
+            del dataloader.sampler
+            del dataloader.batch_sampler
+
+            gc.collect()
+
+        for stage_idx, stage in enumerate(self.config.data_stages):
+            if stage_idx < self.metadata.last_stage_idx:
+                continue
+            # NOTE(tj.solergibert) From this point stage_idx = self.metadata.last_stage_idx. We update self.metadata.last_stage_idx (which keeps track of the training stage)
+            #   in each and every training step.
+
+            if (
+                stage_idx is not self.metadata.last_validation_stage_idx
+            ):  # When stage_idx (= self.metadata.last_stage_idx, the training stage index) is different than the last validation stage index
+                self.metadata.last_validation_stage_idx = stage_idx  # Update validation stage index
+                # Delete previous stage DataLoader
+                prev_stage_name = self.config.data_stages[stage_idx - 1].name
+                prev_dataloader = dataloaders[prev_stage_name]
+
+                if isinstance(prev_dataloader, DataLoader):
+                    # NOTE: we don't need to clear dummy data generator from memory
+                    clear_dataloader_from_memory(
+                        prev_dataloader, stage_name=stage.name, prev_stage_name=prev_stage_name
+                    )
+
+                self.metadata.last_validation_stage_idx = stage_idx  # Update validation stage index
+
+            # NOTE(tj.solergibert) Create AGAIN the DataLoader
+            dataloader = dataloaders[stage.name]
+            # NOTE: if a dataloader is lazy initialized, we need to call it to initialize it
+            dataloader = dataloader() if callable(dataloader) else dataloader
+            break
+
+        self.current_validation_dataloader_length = min(len(dataloader), self.limit_val_batches)
+        self.current_validation_dataloader = sanity_check_dataloader(
+            dataloader=dataloader, parallel_context=self.parallel_context, config=self.config
+        )  # NOTE(tj.solergibert) Create a Iterator from the DataLoader
+
     def _update_dataloader_based_on_training_stages(self, dataloaders: Union[List[DataLoader], DataLoader]):
         from collections.abc import Generator
 
@@ -326,11 +433,11 @@ class DistributedTrainer:
             self.config.data_stages
         ), "Number of dataloaders should match the number of dataset stages"
 
-        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str):
+        def clear_dataloader_from_memory(dataloader: DataLoader, stage_name: str, prev_stage_name: str):
             import gc
 
             log_rank(
-                f"[Training Stage: {stage_name}] Clearing the previous training stage's dataloader and datasets from memory",
+                f"[Training Stage: {stage_name}] Clearing the previous training stage's ({prev_stage_name}) dataloader and datasets from memory",
                 logger=logger,
                 level=logging.INFO,
             )
@@ -367,7 +474,9 @@ class DistributedTrainer:
 
                     if isinstance(prev_dataloader, DataLoader):
                         # NOTE: we don't need to clear dummy data generator from memory
-                        clear_dataloader_from_memory(prev_dataloader, stage_name=stage.name)
+                        clear_dataloader_from_memory(
+                            prev_dataloader, stage_name=stage.name, prev_stage_name=prev_stage_name
+                        )
 
                 self.metadata.last_stage_idx = stage_idx
 
@@ -433,6 +542,19 @@ class DistributedTrainer:
 
                 # Training step
                 outputs, loss_avg = self.training_step(dataloader=self.current_dataloader)
+                self.training_step_time = time.time()
+
+                # Validation stage
+                if self.iteration_step % self.config.tokens.val_check_interval == 0:
+                    self._prepare_dataloader_for_validation_stage(valid_dataloader_or_dls)
+                    val_global_loss, val_lang_losses = self.validation_step(
+                        dataloader=self.current_validation_dataloader
+                    )
+                    self.validation_step_time = time.time()
+                else:
+                    # NOTE(tj.solergibert) As we are reporting the training & validation metrics together, we
+                    # must comply with val_check_interval % iteration_step_info_interval = 0
+                    val_global_loss, val_lang_losses = None, None
 
                 # Training Logs
                 # TODO(xrsrke): refactor using callbacks would be better
@@ -443,7 +565,7 @@ class DistributedTrainer:
                 ].consumed_train_samples += self.global_batch_size
 
                 if (self.iteration_step - 1) % self.config.logging.iteration_step_info_interval == 0:
-                    self.train_step_logs(outputs=outputs, loss_avg=loss_avg)
+                    self.train_step_logs(loss_avg=loss_avg, global_loss=val_global_loss, lang_losses=val_lang_losses)
 
                 # Checkpoint
                 if self.iteration_step % self.config.checkpoints.checkpoint_interval == 0:
@@ -524,6 +646,8 @@ class DistributedTrainer:
             # This is an average on only one data rank.
             loss_avg = {}
             for k in outputs[0].keys():
+                if k == "sample_loss":
+                    continue  # sample loss is the individual losses, is already averaged as 'lm_loss'
                 if k == "loss":
                     loss_avg["lm_loss"] = torch.stack([output[k] for output in outputs]).sum()
                     k = "lm_loss"
@@ -556,22 +680,71 @@ class DistributedTrainer:
         return outputs, loss_avg
 
     def validation_step(self, dataloader: Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]]) -> Iterable[Dict]:
-        outputs = self.pipeline_engine.validate_batch_iter(
+        outputs, lang_codes = self.pipeline_engine.validate_batch_iter(
             model=self.model,
-            batch=(next(dataloader) for _ in range(self.limit_val_batches)),
-            nb_microbatches=self.limit_val_batches,
+            batch=(next(dataloader) for _ in range(self.current_validation_dataloader_length)),
+            nb_microbatches=self.current_validation_dataloader_length,
         )
-        return outputs
+
+        lang_losses = {
+            lang: [] for lang in self.config.data_stages[self.metadata.last_stage_idx].data.dataset.languages
+        }
+        lang_losses_list = list(lang_losses.keys())
+
+        # Compute losses
+        if isinstance(outputs[0], torch.Tensor):
+            # Multilingual losses
+            for loss, lang_code in zip(outputs, lang_codes):
+                lang_losses[lang_losses_list[lang_code]].append(loss)
+            # Global loss
+            global_loss_avg = torch.mean(torch.stack(outputs))
+            # Sync multilingual losses across DP
+            for lang in lang_losses.keys():
+                if not lang_losses[
+                    lang
+                ]:  # If the list is empty --> Set local language loss to -1 to exclude it from the global computation
+                    lang_losses[lang] = torch.tensor(-1, dtype=torch.float32)
+                else:  # If we have at least 1 loss from a given language --> compute local language loss mean
+                    lang_losses[lang] = torch.mean(torch.stack(lang_losses[lang]))
+
+            # NOTE(tj.solergibert) We create a (DP SIZE, LANGS) tensor to aggregate ALL local losses across DP groups.
+            #   Then we compute the mean of each lang in each and every rank and finally copy back the result to the
+            #   `lang_losses` dict for logging
+            lang_losses_tensor_out = torch.zeros(
+                (self.parallel_context.dp_pg.size(), len(lang_losses.keys())), dtype=torch.float, device="cuda"
+            )  # (DP SIZE, LANGS)
+            lang_losses_tensor_local = torch.stack(list(lang_losses.values())).unsqueeze(0)  # (1, LANGS)
+            dist.all_gather_into_tensor(lang_losses_tensor_out, lang_losses_tensor_local, self.parallel_context.dp_pg)
+            mask = lang_losses_tensor_out != -1
+            lang_losses_tensor_local = (lang_losses_tensor_out * mask).sum(dim=0) / mask.sum(dim=0)  # (1, LANGS)
+            for idx, lang in enumerate(lang_losses.keys()):
+                lang_losses[lang] = lang_losses_tensor_local[idx]
+
+            # Sync global losses across DP
+            dist.all_reduce(global_loss_avg, group=self.parallel_context.dp_pg, op=dist.ReduceOp.AVG)
+
+            # TODO(tj.solergibert) Delete this testing assertions
+            for lang in lang_losses.keys():
+                assert_tensor_synced_across_pg(tensor=lang_losses[lang], pg=self.parallel_context.dp_pg)
+            assert_tensor_synced_across_pg(tensor=global_loss_avg, pg=self.parallel_context.dp_pg)
+
+        else:
+            global_loss_avg = None
+            lang_losses = None
+
+        return global_loss_avg, lang_losses
 
     def train_step_logs(
         self,
-        outputs: Iterable[Dict[str, Union[torch.Tensor, TensorPointer]]],
         loss_avg: Optional[Dict[str, torch.Tensor]],
+        global_loss: Optional[torch.Tensor],
+        lang_losses: Optional[Dict[str, torch.Tensor]],
     ) -> None:
         # TODO @nouamanetazi: Megatron-LM seems to be using a barrier to report their interval time. Check if this is necessary. https://github.com/NouamaneTazi/Megatron-LM/blob/e241a96c3085b18e36c6cee1d68a8155de77b5a6/megatron/training.py#L607
         dist.barrier()
         torch.cuda.synchronize()
-        elapsed_time_per_iteration_ms = (time.time() - self.iteration_start_time) * 1000
+        # Training metrics
+        elapsed_time_per_iteration_ms = (self.training_step_time - self.iteration_start_time) * 1000
         tokens_per_sec = (
             self.global_batch_size * self.sequence_length / (elapsed_time_per_iteration_ms / 1000)
         )  # tokens_per_sec is calculated using sequence_length
@@ -581,13 +754,27 @@ class DistributedTrainer:
             global_batch_size=self.global_batch_size,
         )
 
+        # Validation metrics
+        if global_loss is not None:
+            validation_total_samples = self.current_validation_dataloader_length * self.micro_batch_size
+            validation_elapsed_time_per_iteration_ms = (self.validation_step_time - self.training_step_time) * 1000
+            validation_tokens_per_sec = (
+                validation_total_samples * self.sequence_length / (validation_elapsed_time_per_iteration_ms / 1000)
+            )
+
+            validation_model_tflops, validation_hardware_tflops = self.unwrapped_model.get_flops_per_sec(
+                iteration_time_in_sec=validation_elapsed_time_per_iteration_ms / 1000,
+                sequence_length=self.sequence_length,
+                global_batch_size=validation_total_samples,
+            )
+
         if dist.get_rank(self.parallel_context.world_pg) in self.logger_ranks:
             assert self.loggerwriter is not None, "loggerwriter should be defined on logger ranks"
 
+            # Training metrics
             lr = self.lr_scheduler.get_last_lr()[0]
 
             log_entries = [
-                # LogItem("consumed_samples", self.consumed_train_samples, "human_format"),  # , "12d"),
                 LogItem(
                     "consumed_tokens",
                     self.metadata.consumed_train_samples * self.config.tokens.sequence_length,
@@ -610,6 +797,46 @@ class DistributedTrainer:
 
             if self.config.optimizer.clip_grad is not None:
                 log_entries.append(LogItem("grad_norm", self.grad_norm_unclipped.item(), "human_format"))  # , ".3f"))
+
+            # Validation metrics
+            if global_loss is not None:
+                log_entries.extend(
+                    [
+                        LogItem(
+                            "validation_consumed_tokens",
+                            validation_total_samples * self.sequence_length,
+                            "human_format",
+                        ),  # , "12d"),
+                        LogItem(
+                            "validation_elapsed_time_per_iteration_ms",
+                            validation_elapsed_time_per_iteration_ms,
+                            "human_format",
+                        ),  # , ".1f"),
+                        LogItem("validation_tokens_per_sec", validation_tokens_per_sec, "human_format"),  # , "1.6E"),
+                        LogItem(
+                            "validation_tokens_per_sec_per_gpu",
+                            validation_tokens_per_sec / self.parallel_context.world_pg.size(),
+                            "human_format",
+                        ),  # , "1.6E"),
+                        LogItem("validation_loss", global_loss.item(), "human_format"),  # , "1.6E"),
+                        LogItem(
+                            "validation_model_tflops_per_gpu", validation_model_tflops / 3, "human_format"
+                        ),  # , ".2f"), # NOTE(tj.solergibert) Check llama.py --> def get_flops() --> model_flops for explanation of the / 3 factor
+                        LogItem(
+                            "validation_hardware_tflops_per_gpu", validation_hardware_tflops / 3, "human_format"
+                        ),  # , ".2f"), # NOTE(tj.solergibert) Check llama.py --> def get_flops() --> model_flops for explanation of the / 3 factor
+                    ]
+                )
+
+                # NOTE Currently you have to log each lang metric one by one and then merge them manually in the same plot through the wandb UI.
+                #   Example: https://community.wandb.ai/t/log-multiple-variables-at-the-same-plot/2474
+                #   GitHub complains: https://github.com/wandb/wandb/issues/3035
+                log_entries.extend(
+                    [
+                        LogItem(f"{lang}_validation_loss", loss.item(), "human_format")
+                        for lang, loss in lang_losses.items()
+                    ]
+                )
 
             # Log not too often the memory
             if self.iteration_step < 5 or (self.iteration_step - 1) % self.config.checkpoints.checkpoint_interval == 0:

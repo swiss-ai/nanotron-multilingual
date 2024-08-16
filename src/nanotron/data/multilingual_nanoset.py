@@ -30,7 +30,6 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset_folders: List[str],
         sequence_length: int,
         token_size: int,
-        dataset_tokens: List[int],
         train_split_num_samples: int = None,
         is_valid: bool = False,
         dataset_weights: Union[List[float], None] = None,
@@ -47,7 +46,6 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         self.sequence_length = sequence_length
         self.token_size = token_size
         self.train_split_num_samples = train_split_num_samples
-        self.dataset_tokens = dataset_tokens
         self.is_valid = is_valid
         self.random_seed = random_seed
         self.datatrove_datasets = []
@@ -107,7 +105,7 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         dataset_sample = self.dataset_sample_index[idx]
 
         tokens = self.datatrove_datasets[dataset][dataset_sample]
-        tokens["input_ids"][0] = self.dataset_tokens[dataset]  # Prepend language token
+        tokens["lang_code"] = torch.tensor(dataset, dtype=torch.long)
 
         return tokens
 
@@ -120,7 +118,9 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         num_epochs = int(self.train_split_num_samples / samples_per_epoch) + 1
         # Build the dataset indexes for 1 epoch
         dataset_index, dataset_sample_index = build_train_nanoset_index_helper(
-            n_samples=samples_per_epoch, weights=self.dataset_weights, dataset_sizes=self.dataset_lengths
+            n_samples=samples_per_epoch,
+            weights=self.dataset_weights,
+            dataset_sizes=self.dataset_lengths,
         )
         # Shuffle the indexes the same way
         numpy_random_state = np.random.RandomState(self.random_seed)

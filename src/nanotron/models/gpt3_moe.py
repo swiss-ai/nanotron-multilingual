@@ -218,6 +218,7 @@ class GPT3MoEForTraining(GPT3ForTraining):
         self,
         input_ids: Union[torch.Tensor, TensorPointer],
         input_mask: Union[torch.Tensor, TensorPointer],
+        lang_code: Union[torch.Tensor, TensorPointer],  # [batch_size, 1] TODO
         label_ids: Union[torch.Tensor, TensorPointer],
         label_mask: Union[torch.Tensor, TensorPointer],
     ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
@@ -234,21 +235,22 @@ class GPT3MoEForTraining(GPT3ForTraining):
                 else TensorPointer(self.input_pp_rank)
             ),
         }
-        output = self.model(
+        model_output = self.model(
             input_ids=input_ids,
             input_mask=input_mask,
             aux_losses=aux_losses,
         )
-        loss = self.loss(
-            sharded_logits=output["sharded_logits"],
+        outputs = self.loss(
+            sharded_logits=model_output["sharded_logits"],
             label_ids=label_ids,
             label_mask=label_mask,
         )
 
-        if isinstance(output["aux_losses"], dict):
-            for key, value in output["aux_losses"].items():
-                loss[key] = value
-        return loss
+        outputs["loss"] = torch.mean(outputs["sample_loss"])
+        if isinstance(model_output["aux_losses"], dict):
+            for key, value in model_output["aux_losses"].items():
+                outputs[key] = value
+        return outputs
 
     def get_block_compute_costs(self):
         """Computes the compute cost of each block in the model so that we can do a better job of load balancing."""

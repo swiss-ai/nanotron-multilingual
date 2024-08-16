@@ -11,7 +11,12 @@ from dacite import from_dict
 from yaml.loader import SafeLoader
 
 from nanotron.config.lighteval_config import LightEvalConfig
-from nanotron.config.models_config import ExistingCheckpointInit, NanotronConfigs, RandomInit, SpectralMupInit
+from nanotron.config.models_config import (
+    ExistingCheckpointInit,
+    NanotronConfigs,
+    RandomInit,
+    SpectralMupInit,
+)
 from nanotron.config.parallelism_config import ParallelismArgs
 from nanotron.config.utils_config import (
     RecomputeGranularity,
@@ -111,7 +116,7 @@ class NanosetDatasetsArgs:
 class MultilingualNanosetDatasetsArgs:
     training_folder: Union[str, dict, List[str]]
     validation_folder: Union[str, List[str]]
-    lang_to_ids: dict  # Mapping from the previously defined folders to tokens. Respect the order
+    languages: List[str]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
 
     def __post_init__(self):
         if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
@@ -125,20 +130,25 @@ class MultilingualNanosetDatasetsArgs:
             self.training_folder = list(tmp_training_folder.keys())
             self.dataset_weights = list(tmp_training_folder.values())
 
-        self.dataset_tokens = list(self.lang_to_ids.values())
+        assert len(self.training_folder) == len(
+            self.languages
+        ), f"The sizes of training_folder and languages mismatch ({len(self.training_folder)} vs {len(self.languages)})"
+
         assert len(self.training_folder) == len(
             self.validation_folder
         ), f"The sizes of training_folder and validation_folder mismatch ({len(self.training_folder)} vs {len(self.validation_folder)})"
-        assert len(self.training_folder) == len(
-            self.dataset_tokens
-        ), f"The sizes of training_folder and lang_to_ids mismatch ({len(self.training_folder)} vs {len(self.dataset_tokens)})"
 
 
 @dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs, MultilingualNanosetDatasetsArgs]
+    dataset: Union[
+        PretrainDatasetsArgs,
+        NanosetDatasetsArgs,
+        MultilingualNanosetDatasetsArgs,
+        MultilingualNanosetDatasetsArgs,
+    ]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
@@ -405,6 +415,13 @@ class Config:
                 for i in range(len(self.data_stages) - 1)
             ), "The stages are not sorted by start_training_step in increasing order"
 
+        # NOTE(tj.solergibert) As we are reporting the training & validation metrics together, we
+        # must comply with val_check_interval % iteration_step_info_interval = 0
+        if not self.tokens.val_check_interval % self.logging.iteration_step_info_interval == 0:
+            raise ValueError(
+                f"It is necessary to run the validation stage during a logging step. Validation interval: {self.tokens.val_check_interval}, Logging interval: {self.logging.iteration_step_info_interval}"
+            )
+
         # # if lighteval, we need tokenizer to be defined
         # if self.checkpoints.lighteval is not None:
         #     assert self.tokenizer.tokenizer_name_or_path is not None
@@ -427,7 +444,10 @@ class Config:
 
 
 def get_config_from_dict(
-    config_dict: dict, config_class: Type = Config, skip_unused_config_keys: bool = False, skip_null_keys: bool = False
+    config_dict: dict,
+    config_class: Type = Config,
+    skip_unused_config_keys: bool = False,
+    skip_null_keys: bool = False,
 ):
     """Get a config object from a dictionary
 
@@ -445,7 +465,7 @@ def get_config_from_dict(
     if skip_null_keys:
         logger.warning("Skip_null_keys set")
         config_dict = {
-            k: {kk: vv for kk, vv in v.items() if vv is not None} if isinstance(v, dict) else v
+            k: ({kk: vv for kk, vv in v.items() if vv is not None} if isinstance(v, dict) else v)
             for k, v in config_dict.items()
             if v is not None
         }

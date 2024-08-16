@@ -170,7 +170,10 @@ class GPT3Config:
         if "_is_using_mup" in config:
             del config["_is_using_mup"]
         return Starcoder2Config(
-            grouped_query=True, num_kv_heads=self.num_attention_heads, use_rotary_embeddings=False, **config
+            grouped_query=True,
+            num_kv_heads=self.num_attention_heads,
+            use_rotary_embeddings=False,
+            **config,
         )
 
     @property
@@ -244,7 +247,10 @@ class GPT3MoEConfig:
         if "_is_using_mup" in config:
             del config["_is_using_mup"]
         return Starcoder2Config(
-            grouped_query=True, num_kv_heads=self.num_attention_heads, use_rotary_embeddings=False, **config
+            grouped_query=True,
+            num_kv_heads=self.num_attention_heads,
+            use_rotary_embeddings=False,
+            **config,
         )
 
     @property
