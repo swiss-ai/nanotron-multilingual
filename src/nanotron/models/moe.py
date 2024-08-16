@@ -431,7 +431,7 @@ class ParallelDroplessMLP(torch.nn.Module):
             z_loss = torch.zeros(1, device=x.device)
 
         if self.use_bias:
-            return x + self.bias
+            x = x + self.bias
         return x, lbl_loss, z_loss
 
     def permute_and_compute(
