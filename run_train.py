@@ -354,7 +354,11 @@ if __name__ == "__main__":
     # Load trainer and data
     trainer = DistributedTrainer(config_file)
     train_dataloader = get_dataloader(trainer)
-    valid_dataloader = get_valid_dataloader(trainer)
+
+    # NOTE(tj.solergibert) Build validation dataloaders only if necessary
+    valid_dataloader = None
+    if trainer.config.tokens.val_check_interval != -1:
+        valid_dataloader = get_valid_dataloader(trainer)
 
     # Train
     trainer.train(train_dataloader, valid_dataloader)

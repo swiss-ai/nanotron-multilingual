@@ -110,13 +110,13 @@ class NanosetDatasetsArgs:
 @dataclass
 class MultilingualNanosetDatasetsArgs:
     training_folder: Union[str, dict, List[str]]
-    validation_folder: Union[str, List[str]]
-    languages: List[str]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
+    validation_folder: Optional[Union[str, List[str]]]
+    languages: Optional[List[str]]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
 
     def __post_init__(self):
         if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
             self.training_folder = [self.training_folder]
-            self.validation_folder = [self.validation_folder]
+            self.validation_folder = [self.validation_folder] if self.validation_folder is not None else None
             self.dataset_weights = [1]
         elif isinstance(self.training_folder, List):  # Case 2: > 1 Dataset folder
             self.dataset_weights = None  # Set to None so we consume all the samples randomly
@@ -125,20 +125,23 @@ class MultilingualNanosetDatasetsArgs:
             self.training_folder = list(tmp_training_folder.keys())
             self.dataset_weights = list(tmp_training_folder.values())
 
-        assert len(self.training_folder) == len(
-            self.languages
+        assert (
+            len(self.training_folder) == len(self.languages) if self.languages else True
         ), f"The sizes of training_folder and languages mismatch ({len(self.training_folder)} vs {len(self.languages)})"
 
-        assert len(self.training_folder) == len(
-            self.validation_folder
+        assert (
+            len(self.training_folder) == len(self.validation_folder) if self.validation_folder else True
         ), f"The sizes of training_folder and validation_folder mismatch ({len(self.training_folder)} vs {len(self.validation_folder)})"
+
+        if not self.languages and self.validation_folder:
+            raise ValueError(f"You must specify languages to perform the validation step w/ {self.validation_folder}")
 
 
 @dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs, MultilingualNanosetDatasetsArgs]
+    dataset: Union[MultilingualNanosetDatasetsArgs]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
@@ -415,6 +418,12 @@ class Config:
         # # if lighteval, we need tokenizer to be defined
         # if self.checkpoints.lighteval is not None:
         #     assert self.tokenizer.tokenizer_name_or_path is not None
+
+        if not self.data_stages[0].data.dataset.validation_folder:
+            # NOTE(tj.solergibert) We use print NOT log_rank because at this moment the process group is not
+            # initialized
+            print("No validation data provided, skipping validation step")
+            self.tokens.val_check_interval = -1
 
     @property
     def global_batch_size(self):
