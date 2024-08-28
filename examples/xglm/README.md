@@ -25,3 +25,10 @@ cd examples/xglm
 torchrun --nproc-per-node=1 convert_dense2moe.py --checkpoint-path=checkpoints/xglm-564M --save-path=$SCRATCH/checkpoints/xglm-8x564M --num-experts=8
 ```
 Note that this upcycling _drops_ the bias parameters of the MLP because the MegaBlocks implementation does not support bias parameters. While this is a limitation of the current implementation, the performance is quickly recovered after a few training steps.
+
+To save back to huggingface format use
+```bash
+torchrun examples/xglm/convert_ntmoe2hf.py --checkpoint-path=$SCRATCH/checkpoints/xglm-8x564M --save-path=$SCRATCH/checkpoints/huggingface/xglm-8x56fM
+```
+
+Make sure to have the [XGLM MOE implementation](https://github.com/negar-foroutan/Multilingual_MoE) installed (e.g. using `PYTHONPATH=/path/to/Multilingual_MoE/models`).
