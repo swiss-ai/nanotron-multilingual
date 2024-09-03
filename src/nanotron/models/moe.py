@@ -157,14 +157,68 @@ class dMoE(torch.nn.Module):
         """
         # Compute the expert scores and assignments.
         # TODO: support sequence parallelism
-        batch_size, sequence_length, _ = hidden_states.size()
+        sequence_length, batch_size, _ = hidden_states.size()
         x = hidden_states.view(-1, self.config.hidden_size)
         router_logits, expert_weights, top_experts = self.gate(x)
 
         # Compute the experts.
         x, lbl_loss, z_loss = self.experts(x, router_logits, expert_weights, top_experts)
         return {
-            "hidden_states": x.reshape(batch_size, sequence_length, -1),
+            "hidden_states": x.reshape(sequence_length, batch_size, -1),
+            "load_balancing_loss": lbl_loss,
+            "z_loss": z_loss,
+        }
+
+
+class dLangMoE(torch.nn.Module):
+    def __init__(
+        self,
+        config: Config,
+        parallel_context: "ParallelContext",
+        parallel_config: Optional[ParallelismArgs],
+    ):
+        super().__init__()
+        self.config = config
+        self.tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
+        if self.tp_mode == TensorParallelLinearMode.REDUCE_SCATTER:
+            logging.warn_once(
+                logger=logger,
+                msg="TensorParallelLinearMode.REDUCE_SCATTER is still experimental for MoEs. Use at your own risk.",
+                rank=0,
+            )
+
+        # Token router.
+        self.gate = LearnedRouter(config, meta_dim=config.language_embedding_size)
+
+        # Expert computation helper.
+        self.experts = ParallelDroplessMLP(
+            config,
+            use_bias=False,
+            parallel_context=parallel_context,
+            parallel_config=parallel_config,
+        )
+
+    def forward(self, hidden_states: torch.Tensor, lang_hidden_states: torch.Tensor):
+        """
+        Args:
+            x: input tensor of shape [sequence_length, batch_size, hidden_size]
+            lang_hidden_states: input tensor of shape [1, batch_size, hidden_size]
+        """
+        # Compute the expert scores and assignments.
+        # TODO: support sequence parallelism
+        sequence_length, batch_size, _ = hidden_states.size()
+        x = hidden_states.view(-1, self.config.hidden_size)
+
+        # Repeat the language embedding to go to [batch_size * sequence_length, hidden_size]
+        lang_x = lang_hidden_states.repeat(sequence_length, 1, 1)
+        lang_x = lang_x.view(-1, self.config.language_embedding_size)
+
+        router_logits, expert_weights, top_experts = self.gate(x, lang_x)
+
+        # Compute the experts.
+        x, lbl_loss, z_loss = self.experts(x, router_logits, expert_weights, top_experts)
+        return {
+            "hidden_states": x.reshape(sequence_length, batch_size, -1),
             "load_balancing_loss": lbl_loss,
             "z_loss": z_loss,
         }
@@ -172,12 +226,16 @@ class dMoE(torch.nn.Module):
 
 # Adapted from megablocks.layers.router.LearnedRouter
 class LearnedRouter(torch.nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, meta_dim: int = 0):
         super().__init__()
-        self.layer = torch.nn.Linear(config.hidden_size, config.moe_num_experts, bias=False)
+        self.layer = torch.nn.Linear(config.hidden_size + meta_dim, config.moe_num_experts, bias=False)
         self.config = config
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, meta_x: Optional[torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if meta_x is not None:
+            x = torch.cat([x, meta_x], dim=-1)
         router_logits = self.layer(x)  # (batch * sequence_length, n_experts)
         scores = F.softmax(router_logits, dim=-1, dtype=torch.float32)  # TODO: fuse?
 
@@ -652,6 +710,7 @@ class MLP(nn.Module):
         hidden_states = self.w2(self.act(merged_states))
         return hidden_states
 
+
 class GLU(MLP):
     def __init__(
         self,
@@ -676,10 +735,11 @@ class GLU(MLP):
             expert_parallel_size=self.expert_pg_size,
         )
 
-    def forward(self, x, topo):
+    def forward(self, hidden_states, topo):
         merged_states = self.w1(hidden_states)
         hidden_states = self.w2(self.act(merged_states) * self.w3(hidden_states))
         return hidden_states
+
 
 def inclusive_cumsum(x, dim):
     scalar = ops.inclusive_cumsum(x, dim)

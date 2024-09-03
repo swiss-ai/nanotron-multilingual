@@ -57,6 +57,7 @@ from nanotron.logging import (
 from nanotron.models import NanotronModel, build_model
 from nanotron.models.base import check_model_has_grad
 from nanotron.models.gpt3 import GPT3ForTraining
+from nanotron.models.gpt3_langmoe import GPT3LangMoEForTraining
 from nanotron.models.gpt3_moe import GPT3MoEForTraining
 from nanotron.models.llama import LlamaForTraining, RotaryEmbedding
 from nanotron.models.starcoder2 import Starcoder2ForTraining
@@ -108,6 +109,7 @@ CONFIG_TO_MODEL_CLASS = {
     "Starcoder2Config": Starcoder2ForTraining,
     "GPT3Config": GPT3ForTraining,
     "GPT3MoEConfig": GPT3MoEForTraining,
+    "GPT3LangMoEConfig": GPT3LangMoEForTraining,
 }
 
 try:
