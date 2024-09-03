@@ -24,8 +24,8 @@ TEST_SEQUENCE_LENGTH = 128  # If we test with a very large sequence length, prec
 #TEST_SEQUENCE_LENGTH = MAX_SEQUENCE_LENGTH
 BATCH_SIZE = 4
 HIDDEN_SIZE = 1024
-DTYPE = torch.bfloat16
-#DTYPE = torch.float32
+#DTYPE = torch.bfloat16
+DTYPE = torch.float32
 TEXT = "Hello. This is a relatively long text. I will use this text to test the conversion scripts. Let's finish this text soon because I don't have much more to say. Final note:"
 
 CONFIG = GPT3MoEConfig(
@@ -47,13 +47,13 @@ CONFIG = GPT3MoEConfig(
     use_spda=DTYPE is not torch.bfloat16,
     # vvv moe vvv
     is_moe=True,
-    moe_num_experts=4,
-    num_experts_per_tok=4,
+    moe_num_experts=8,
+    num_experts_per_tok=2,
     moe_loss_weight=0.01,
     moe_z_loss_weight=0.0,
     moe_glu=False,
 )
-#PARALLEL_CONFIG = ParallelismArgs(dp=1, pp=1, tp=1, expert_parallel_size=1)  #CONFIG.moe_num_experts)
+PARALLEL_CONFIG = ParallelismArgs(dp=1, pp=1, tp=1, expert_parallel_size=1)  #CONFIG.moe_num_experts)
 
 
 @pytest.fixture
@@ -93,11 +93,15 @@ def test_nt2hf_gate(hidden_states: torch.Tensor):
     init_distributed(tp=1, dp=1, pp=1)(_test_nt2hf_gate)(hidden_states=hidden_states)
 
 
-def _test_nt2hf_ff(parallel_context: ParallelContext, hidden_states: torch.Tensor):
+def _test_nt2hf_ff(parallel_context: ParallelContext, hidden_states: torch.Tensor,
+                   num_experts: int, num_experts_per_tok: int):
     hidden_states = hidden_states.cuda()
 
-    config_hf = convert_config(CONFIG)
-    ff_nt = dMoE(CONFIG, parallel_context, None).cuda().to(DTYPE)
+    config = {**vars(CONFIG)}
+    config.update({"moe_num_experts": num_experts, "num_experts_per_tok": num_experts_per_tok})
+    config = GPT3MoEConfig(**config)
+    config_hf = convert_config(config)
+    ff_nt = dMoE(config, parallel_context, PARALLEL_CONFIG).cuda().to(DTYPE)
     ff_hf = XGLMSparseMoeBlock(config_hf).cuda().to(DTYPE)
     convert_ff(ff_hf, ff_nt)
 
@@ -106,9 +110,12 @@ def _test_nt2hf_ff(parallel_context: ParallelContext, hidden_states: torch.Tenso
     out_hf = out_hf.permute(1, 0, 2)
 
     assert out_nt.size() == out_hf.size()
-    almost_close(out_nt, out_hf, max_far=0.1, far_atol=0.02)
-    #torch.testing.assert_close(out_nt, out_hf)
+    almost_close(out_nt, out_hf, max_far=0.05, far_atol=0.003)
 
+
+@pytest.mark.parametrize("num_experts,num_experts_per_tok", [(1, 1), (2, 1), (4, 1), (4, 2), (8, 1), (8, 2), (8, 4)])
+def test_nt2hf_ff(hidden_states: torch.Tensor, num_experts: int, num_experts_per_tok: int):
+    init_distributed(tp=1, dp=1, pp=1)(_test_nt2hf_ff)(hidden_states=hidden_states, num_experts=num_experts, num_experts_per_tok=num_experts_per_tok)
 
 
 def _test_nt2hf_model(parallel_context: ParallelContext, input_ids: torch.Tensor, input_mask: torch.Tensor):
@@ -166,13 +173,10 @@ def _test_nt2hf_model(parallel_context: ParallelContext, input_ids: torch.Tensor
     return out_nt.cpu(), out_hf.cpu()
 
 
-def test_nt2hf_ff(hidden_states: torch.Tensor):
-    init_distributed(tp=1, dp=1, pp=1)(_test_nt2hf_ff)(hidden_states=hidden_states)
-
-
 def _test_nt2hf_dummy_xglm(parallel_context: ParallelContext, input_ids: torch.Tensor, input_mask: torch.Tensor):
     out_nt, out_hf = _test_nt2hf_model(parallel_context, input_ids, input_mask)
-    almost_close(out_nt, out_hf, max_far=0.1, far_atol=0.02)
+    almost_close(out_nt, out_hf, max_far=0.01, far_atol=2.0)  # We allow for less than 1% errors, but some of these are very large!
+    #torch.testing.assert_close(out_nt.bfloat16(), out_hf.bfloat16())
 
 
 def test_nt2hf_dummy_xglm(input_ids: torch.Tensor, input_mask: torch.Tensor):

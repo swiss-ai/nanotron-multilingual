@@ -29,7 +29,7 @@ from models.gating import BasicGate
 
 
 def convert_config(config: GPT3MoEConfig) -> XGLMmoeConfig:
-    assert config.moe_num_experts > 1, f"Why are you using a 1-expert moe? lol"
+    #assert config.moe_num_experts > 1, f"Why are you using a 1-expert moe? lol"
     if config.embd_pdrop != config.resid_pdrop:
         warnings.warn(
             f"nanotron.embd_pdrop = {config.embd_pdrop} does not match with "
@@ -80,14 +80,25 @@ def convert_gate(gate_hf: BasicGate, gate_nt: LearnedRouter):
 def convert_ff(ff_hf: XGLMSparseMoeBlock, ff_nt: dMoE):
     convert_gate(ff_hf.gate, ff_nt.gate)
     int_size = ff_nt.config.intermediate_size
+    if len(ff_hf.experts) == 1:
+        assert ff_nt.experts.mlp.w1.module.weight.shape == (int_size*len(ff_hf.experts), ff_nt.config.hidden_size)
+        assert ff_nt.experts.mlp.w2.module.weight.shape == (ff_nt.config.hidden_size, int_size*len(ff_hf.experts))
+    else:
+        assert ff_nt.experts.mlp.w1.module.weight.T.shape == (int_size*len(ff_hf.experts), ff_nt.config.hidden_size)
+        assert ff_nt.experts.mlp.w2.module.weight.shape == (int_size*len(ff_hf.experts), ff_nt.config.hidden_size)
+
     for i, expert_hf in enumerate(ff_hf.experts):
         # TODO: fc1, fc2 has bias
         i0 = i*int_size
         i1 = (i + 1)*int_size
         with torch.no_grad():
-            expert_hf.fc1.weight.copy_(ff_nt.experts.mlp.w1.module.weight.T[i0:i1, :].clone())
+            if len(ff_hf.experts) == 1:
+                expert_hf.fc1.weight.copy_(ff_nt.experts.mlp.w1.module.weight[i0:i1, :].clone())
+                expert_hf.fc2.weight.copy_(ff_nt.experts.mlp.w2.module.weight[:, i0:i1].clone())
+            else:
+                expert_hf.fc1.weight.copy_(ff_nt.experts.mlp.w1.module.weight.T[i0:i1, :].clone())
+                expert_hf.fc2.weight.copy_(ff_nt.experts.mlp.w2.module.weight[i0:i1, :].T.clone())
             expert_hf.fc1.bias.data.zero_()
-            expert_hf.fc2.weight.copy_(ff_nt.experts.mlp.w2.module.weight[i0:i1, :].T.clone())
             expert_hf.fc2.bias.data.zero_()
 
 def convert_decoder(block_hf: XGLMDecoderLayer, block_nt: GPT3MoEBlock):
