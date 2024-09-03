@@ -31,4 +31,4 @@ To save back to huggingface format use
 torchrun examples/xglm/convert_ntmoe2hf.py --checkpoint-path=$SCRATCH/checkpoints/xglm-8x564M --save-path=$SCRATCH/checkpoints/huggingface/xglm-8x56fM
 ```
 
-Make sure to have the [XGLM MOE implementation](https://github.com/negar-foroutan/Multilingual_MoE) installed (e.g. using `PYTHONPATH=/path/to/Multilingual_MoE/models`).
+Make sure to have the [XGLM MOE implementation](https://github.com/negar-foroutan/Multilingual_MoE) installed (e.g. using `PYTHONPATH=/path/to/Multilingual_MoE`).

@@ -162,7 +162,8 @@ class dMoE(torch.nn.Module):
         router_logits, expert_weights, top_experts = self.gate(x)
 
         # Compute the experts.
-        x, lbl_loss, z_loss = self.experts(x, router_logits, expert_weights, top_experts)
+        #return self.experts(x, router_logits, expert_weights, top_experts)
+        x, lbl_loss, z_loss = self.experts(x, router_logits, expert_weights, top_experts) #REMOVE
         return {
             "hidden_states": x.reshape(batch_size, sequence_length, -1),
             "load_balancing_loss": lbl_loss,
@@ -300,12 +301,15 @@ class ParallelDroplessMLP(torch.nn.Module):
             ) = self.indices_and_padded_bins(top_experts)
 
         # Route the tokens for MoE computation.
+        #x_pre = x.clone()
         x = ops.padded_gather(x, indices, bin_ids, bins, padded_bins, self.num_experts_per_tok)
+        #print("forward_once a", x.shape)
 
         with torch.no_grad():
             topo = self.topology(x, padded_bins)
 
-        x = self.mlp(x, topo)
+        x = self.mlp(x, topo)  #REMOVE
+        #return x_pre, self.mlp(x, topo)
 
         # Un-route the data for the MoE output.
         x = ops.padded_scatter(
@@ -422,7 +426,11 @@ class ParallelDroplessMLP(torch.nn.Module):
             top_experts: tensor of shape [sequence_length * batch_size, num_experts_per_tok]
         """
         # Compute the experts.
-        x, tokens_per_expert = self.forward_fn(x, expert_weights.flatten(), top_experts.flatten())
+        x, tokens_per_expert = self.forward_fn(x, expert_weights.flatten(), top_experts.flatten())  #REMOVE
+        #return router_logits
+        #print("nano b", expert_weights)
+        #return expert_weights.bfloat16()
+        #return self.forward_fn(x, expert_weights.flatten(), top_experts.flatten())
         if self.training:
             lbl_loss = load_balancing_loss(router_logits, tokens_per_expert, self.config)
             z_loss = router_z_loss(router_logits, self.config)
@@ -595,9 +603,14 @@ class SparseMLP(nn.Module):
 
     def forward(self, x, topo):
         self.w1.scale_gradients(), self.w2.scale_gradients()
-        x = self.sdd(x.contiguous(), self.w1.module.weight, topo)
-        activation_fn_out = act_fn(x, self.act)
-        return self.dsd(activation_fn_out, self.w2.module.weight)
+        x = self.sdd(x.contiguous(), self.w1.module.weight, topo) # REMOVE
+        #x1 = self.sdd(x.contiguous(), self.w1.module.weight, topo)
+        activation_fn_out = act_fn(x, self.act)  # REMOVE
+        #print(x.shape, activation_fn_out.shape, self.w2.module.weight.shape)
+        #activation_fn_out = act_fn(x1, self.act)
+        return self.dsd(activation_fn_out, self.w2.module.weight)  #REMOVE
+        #x2 = self.dsd(activation_fn_out, self.w2.module.weight)
+        #return x, x1, x2, topo, self.w1.module.weight, self.w2.module.weight
 
 
 class MLP(nn.Module):
