@@ -111,7 +111,9 @@ class NanosetDatasetsArgs:
 class MultilingualNanosetDatasetsArgs:
     training_folder: Union[str, dict, List[str]]
     validation_folder: Optional[Union[str, List[str]]]
-    languages: Optional[List[str]]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
+    languages: List[
+        str
+    ]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Embed lang information into the model 3. Reporting to WANDB
 
     def __post_init__(self):
         if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
@@ -133,15 +135,15 @@ class MultilingualNanosetDatasetsArgs:
             len(self.training_folder) == len(self.validation_folder) if self.validation_folder else True
         ), f"The sizes of training_folder and validation_folder mismatch ({len(self.training_folder)} vs {len(self.validation_folder)})"
 
-        if not self.languages and self.validation_folder:
-            raise ValueError(f"You must specify languages to perform the validation step w/ {self.validation_folder}")
+        if not self.languages:
+            raise ValueError("You must specify the languages of each dataset")
 
 
 @dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[MultilingualNanosetDatasetsArgs]
+    dataset: Union[PretrainDatasetsArgs, MultilingualNanosetDatasetsArgs]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
