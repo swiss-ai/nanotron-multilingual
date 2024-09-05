@@ -20,16 +20,11 @@ from nanotron.models.moe import dMoE, SparseMLP, LearnedRouter
 from examples.xglm.convert_dense2moe import create_nt_moe_model
 from examples.xglm.convert_nt2hf import convert_attention
 from examples.xglm.convert_utils import convert_generic
-
-from models.xglm_model import XGLMForCausalLM, XGLMDecoderLayer, XGLMmoeConfig, XGLMSparseMoeBlock, XGLMMLP
-from models.gating import BasicGate
-
-# TODO: nanotron moe scales down the moe weights but hf doesn't
-# TODO: nanotron does not use pdrop in moe.
+from examples.xglm.transformers_impl.xglm_model import XGLMForCausalLM, XGLMDecoderLayer, XGLMmoeConfig, XGLMSparseMoeBlock, XGLMMLP
+from examples.xglm.transformers_impl.gating import BasicGate
 
 
 def convert_config(config: GPT3MoEConfig) -> XGLMmoeConfig:
-    #assert config.moe_num_experts > 1, f"Why are you using a 1-expert moe? lol"
     if config.embd_pdrop != config.resid_pdrop:
         warnings.warn(
             f"nanotron.embd_pdrop = {config.embd_pdrop} does not match with "
@@ -68,7 +63,6 @@ def convert_config(config: GPT3MoEConfig) -> XGLMmoeConfig:
 
 
 def convert_mlp(mlp_hf: XGLMMLP, mlp_nt: SparseMLP):
-    # TODO: mlp_hf has non-zero bias.
     convert_generic(mlp_hf.fc1, mlp_nt.w1.module)
     convert_generic(mlp_hf.fc2, mlp_nt.w2.module)
 
@@ -88,7 +82,6 @@ def convert_ff(ff_hf: XGLMSparseMoeBlock, ff_nt: dMoE):
         assert ff_nt.experts.mlp.w2.module.weight.shape == (int_size*len(ff_hf.experts), ff_nt.config.hidden_size)
 
     for i, expert_hf in enumerate(ff_hf.experts):
-        # TODO: fc1, fc2 has bias
         i0 = i*int_size
         i1 = (i + 1)*int_size
         with torch.no_grad():
@@ -98,24 +91,19 @@ def convert_ff(ff_hf: XGLMSparseMoeBlock, ff_nt: dMoE):
             else:
                 expert_hf.fc1.weight.copy_(ff_nt.experts.mlp.w1.module.weight.T[i0:i1, :].clone())
                 expert_hf.fc2.weight.copy_(ff_nt.experts.mlp.w2.module.weight[i0:i1, :].T.clone())
-            expert_hf.fc1.bias.data.zero_()
-            expert_hf.fc2.bias.data.zero_()
 
 def convert_decoder(block_hf: XGLMDecoderLayer, block_nt: GPT3MoEBlock):
     convert_generic(block_hf.self_attn_layer_norm, block_nt.ln_1)
     convert_attention(block_hf.self_attn, block_nt.attn)
     convert_generic(block_hf.final_layer_norm, block_nt.ln_2)
-    # TODO: hf has fc1, fc2 attributes but they are not used, probably should be removed.
-    #return block_nt.ff
-    convert_ff(block_hf.block_sparse_moe, block_nt.ff) # REMOVE
+    convert_ff(block_hf.block_sparse_moe, block_nt.ff)
 
 
 def convert(model_hf: XGLMForCausalLM, model_nt: GPT3MoEForTraining):
     convert_generic(model_hf.model.embed_tokens, model_nt.model.token_embeddings.pp_block.token_embedding)
     for layer_hf, layer_nt in tqdm(zip(model_hf.model.layers, model_nt.model.decoder), desc="Converting layers",
                                    total=model_nt.config.num_hidden_layers):
-        #return convert_decoder(layer_hf, layer_nt.pp_block)
-        convert_decoder(layer_hf, layer_nt.pp_block) # REMOVE
+        convert_decoder(layer_hf, layer_nt.pp_block)
     convert_generic(model_hf.model.layer_norm, model_nt.model.final_layer_norm.pp_block)
     convert_generic(model_hf.lm_head, model_nt.model.lm_head.pp_block)
 
@@ -133,8 +121,7 @@ def main(checkpoint_path: Path, save_path: Path, tokenizer_name: Optional[str]):
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         tokenizer.save_pretrained(save_path)
     states = torch.randn(4, 1, 1024)
-    #return convert(model_hf, model_nt), states.cuda().bfloat16()
-    convert(model_hf, model_nt), states.cuda().bfloat16()  # REMOVE
+    convert(model_hf, model_nt), states.cuda().bfloat16()
     print("Saving...")
     model_hf.save_pretrained(save_path)
     print(f"Model saved to {save_path}")

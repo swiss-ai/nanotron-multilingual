@@ -14,9 +14,8 @@ from tests.helpers.utils import init_distributed
 
 from examples.xglm.convert_ntmoe2hf import convert_config, convert_gate, convert_ff, convert
 from examples.xglm.tests.test_implementation import almost_close
-
-from models.xglm_model import XGLMSparseMoeBlock, XGLMForCausalLM
-from models.gating import BasicGate
+from examples.xglm.transformers_impl.xglm_model import XGLMSparseMoeBlock, XGLMForCausalLM
+from examples.xglm.transformers_impl.gating import BasicGate
 
 
 MAX_SEQUENCE_LENGTH = 2048
