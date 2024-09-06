@@ -118,7 +118,9 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         num_epochs = int(self.train_split_num_samples / samples_per_epoch) + 1
         # Build the dataset indexes for 1 epoch
         dataset_index, dataset_sample_index = build_train_nanoset_index_helper(
-            n_samples=samples_per_epoch, weights=self.dataset_weights, dataset_sizes=self.dataset_lengths
+            n_samples=samples_per_epoch,
+            weights=self.dataset_weights,
+            dataset_sizes=self.dataset_lengths,
         )
         # Shuffle the indexes the same way
         numpy_random_state = np.random.RandomState(self.random_seed)

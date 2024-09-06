@@ -5,54 +5,54 @@ checkpoints:
   resume_checkpoint_path: null
   save_initial_state: false
 data_stages:
-- data:
-    dataset:
-      training_folder:
-      - datasets/c4-es/train
-      - datasets/c4-en/train
-      - datasets/c4-fr/train
-      validation_folder:
-      - datasets/c4-es/validation
-      - datasets/c4-en/validation
-      - datasets/c4-fr/validation
-      languages:
-      - es
-      - en
-      - fr
-    num_loading_workers: 1
-    seed: 42
-  name: General purpose training (Blended dataset)
-  start_training_step: 1
-- data:
-    dataset:
-      training_folder:
-      - datasets/c4-es/train
-      validation_folder:
-      - datasets/c4-es/validation
-      languages:
-      - es
-    num_loading_workers: 1
-    seed: 42
-  name: Second purpose training (Single dataset)
-  start_training_step: 1000
-- data:
-    dataset:
-      training_folder:
-      - datasets/c4-es/train
-      - datasets/c4-en/train
-      - datasets/c4-fr/train
-      validation_folder:
-      - datasets/c4-es/validation
-      - datasets/c4-en/validation
-      - datasets/c4-fr/validation
-      languages:
-      - es
-      - en
-      - fr
-    num_loading_workers: 1
-    seed: 42
-  name: Third purpose training (>1 dataset)
-  start_training_step: 2000
+  - data:
+      dataset:
+        training_folder:
+          - datasets/c4-es/train
+          - datasets/c4-en/train
+          - datasets/c4-fr/train
+        validation_folder:
+          - datasets/c4-es/validation
+          - datasets/c4-en/validation
+          - datasets/c4-fr/validation
+        languages:
+          - es
+          - en
+          - fr
+      num_loading_workers: 1
+      seed: 42
+    name: General purpose training (Blended dataset)
+    start_training_step: 1
+  - data:
+      dataset:
+        training_folder:
+          - datasets/c4-es/train
+        validation_folder:
+          - datasets/c4-es/validation
+        languages:
+          - es
+      num_loading_workers: 1
+      seed: 42
+    name: Second purpose training (Single dataset)
+    start_training_step: 1000
+  - data:
+      dataset:
+        training_folder:
+          - datasets/c4-es/train
+          - datasets/c4-en/train
+          - datasets/c4-fr/train
+        validation_folder:
+          - datasets/c4-es/validation
+          - datasets/c4-en/validation
+          - datasets/c4-fr/validation
+        languages:
+          - es
+          - en
+          - fr
+      num_loading_workers: 1
+      seed: 42
+    name: Third purpose training (>1 dataset)
+    start_training_step: 2000
 general:
   benchmark_csv_path: null
   consumed_train_samples: null

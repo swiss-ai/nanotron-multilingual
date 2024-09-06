@@ -11,7 +11,12 @@ from dacite import from_dict
 from yaml.loader import SafeLoader
 
 from nanotron.config.lighteval_config import LightEvalConfig
-from nanotron.config.models_config import ExistingCheckpointInit, NanotronConfigs, RandomInit, SpectralMupInit
+from nanotron.config.models_config import (
+    ExistingCheckpointInit,
+    NanotronConfigs,
+    RandomInit,
+    SpectralMupInit,
+)
 from nanotron.config.parallelism_config import ParallelismArgs
 from nanotron.config.utils_config import (
     RecomputeGranularity,
@@ -138,7 +143,12 @@ class MultilingualNanosetDatasetsArgs:
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs, MultilingualNanosetDatasetsArgs]
+    dataset: Union[
+        PretrainDatasetsArgs,
+        NanosetDatasetsArgs,
+        MultilingualNanosetDatasetsArgs,
+        MultilingualNanosetDatasetsArgs,
+    ]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
@@ -434,7 +444,10 @@ class Config:
 
 
 def get_config_from_dict(
-    config_dict: dict, config_class: Type = Config, skip_unused_config_keys: bool = False, skip_null_keys: bool = False
+    config_dict: dict,
+    config_class: Type = Config,
+    skip_unused_config_keys: bool = False,
+    skip_null_keys: bool = False,
 ):
     """Get a config object from a dictionary
 
@@ -452,7 +465,7 @@ def get_config_from_dict(
     if skip_null_keys:
         logger.warning("Skip_null_keys set")
         config_dict = {
-            k: {kk: vv for kk, vv in v.items() if vv is not None} if isinstance(v, dict) else v
+            k: ({kk: vv for kk, vv in v.items() if vv is not None} if isinstance(v, dict) else v)
             for k, v in config_dict.items()
             if v is not None
         }

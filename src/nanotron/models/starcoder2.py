@@ -32,6 +32,7 @@ from nanotron import distributed as dist
 from nanotron.config import ParallelismArgs, Starcoder2Config
 from nanotron.generation.generate_store import AttachableStore
 from nanotron.models import NanotronModel
+from nanotron.models.moe import ParallelDroplessMLP
 from nanotron.nn.activations import ACT2FN
 from nanotron.nn.layer_norm import TritonLayerNorm
 from nanotron.parallel import ParallelContext
@@ -1375,7 +1376,9 @@ class GPTModel(nn.Module):
 @torch.jit.script
 def masked_mean(loss, label_mask, dtype):
     # type: (Tensor, Tensor, torch.dtype) -> Tensor
-    return (loss * label_mask).sum(dtype=dtype) / label_mask.sum()
+    return (loss * label_mask).sum(dim=1, dtype=dtype) / label_mask.sum(
+        dim=1
+    )  # NOTE(tj.solergibert) Added dim=1 to return a tensor with shape [Batch size, 1] instead of [1]
 
 
 class Loss(nn.Module):
@@ -1400,7 +1403,7 @@ class Loss(nn.Module):
         loss = masked_mean(loss, label_mask, dtype=torch.float)
         # I think indexing causes a sync we don't actually want
         # loss = loss[label_mask].sum()
-        return {"loss": loss}
+        return {"sample_loss": loss}
 
 
 class Starcoder2ForTraining(NanotronModel):
@@ -1427,7 +1430,7 @@ class Starcoder2ForTraining(NanotronModel):
                 "label_ids",
                 "label_mask",
             },
-            module_output_keys={"loss"},
+            module_output_keys={"sample_loss"},
         )
         self.config: Starcoder2Config = config
         self.parallel_config = parallel_config
@@ -1437,20 +1440,21 @@ class Starcoder2ForTraining(NanotronModel):
         self,
         input_ids: Union[torch.Tensor, TensorPointer],
         input_mask: Union[torch.Tensor, TensorPointer],
+        lang_code: Union[torch.Tensor, TensorPointer],  # TODO
         label_ids: Union[torch.Tensor, TensorPointer],
         label_mask: Union[torch.Tensor, TensorPointer],
-    ) -> Union[torch.Tensor, TensorPointer]:
+    ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
         sharded_logits = self.model(
             input_ids=input_ids,
             input_mask=input_mask,
         )
-        return {
-            "loss": self.loss(
-                sharded_logits=sharded_logits,
-                label_ids=label_ids,
-                label_mask=label_mask,
-            )["loss"]
-        }
+        outputs = self.loss(
+            sharded_logits=sharded_logits,
+            label_ids=label_ids,
+            label_mask=label_mask,
+        )
+        outputs["loss"] = torch.mean(outputs["sample_loss"])
+        return outputs
 
     def tie_custom_params(self) -> None:
         # find all params with names qkv.kv.weight and qkv.kv.bias in them
@@ -1517,6 +1521,16 @@ class Starcoder2ForTraining(NanotronModel):
                     module.bias.zero_()
                 else:
                     raise ValueError(f"Who the fuck is {param_name}?")
+            elif isinstance(module, nn.Linear):
+                if "weight" == param_name:
+                    nn.init.normal_(module.weight, mean=0.0, std=std)
+                elif "bias" == param_name:
+                    module.bias.zero_()
+                else:
+                    raise ValueError(f"Who the fuck is {param_name}?")
+            elif isinstance(module, ParallelDroplessMLP):
+                if hasattr(module, "bias"):
+                    module.bias.zero_()
             elif isinstance(module, TensorParallelRowLinear):
                 if "weight" == param_name:
                     nn.init.normal_(module.weight, mean=0.0, std=sigma / math.sqrt(2 * num_layers))
