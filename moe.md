@@ -44,7 +44,7 @@ The env `nanotron-moe.toml` with content:
 image = "/store/swissai/a06/containers/nanotron_moe/nanotron_moe.sqsh"
 
 mounts = ["/capstor", "/users", "/store"]
-workdir = "/users/$USER/"
+workdir = "/workspace/nanotron"
 writable = true
   
 [annotations]
