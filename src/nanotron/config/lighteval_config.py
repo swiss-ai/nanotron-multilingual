@@ -61,6 +61,8 @@ class LightEvalTasksArgs:
     multichoice_continuations_start_space: Optional[bool] = None
     no_multichoice_continuations_start_space: Optional[bool] = None
 
+    langs: Optional[str] = "en"
+
 
 @dataclass
 class LightEvalWandbLoggerConfig:
@@ -92,3 +94,34 @@ class LightEvalConfig:
     tasks: Optional[LightEvalTasksArgs] = None
     logging: Optional[LightEvalLoggingArgs] = None
     wandb: Optional[LightEvalWandbLoggerConfig] = None
+
+
+# batch_size: 16
+# checkpoints_path: null
+# generation: null
+# logging:
+#     hub_repo_details: null
+#     hub_repo_results: null
+#     hub_repo_tensorboard: null
+#     local_output_path: /capstor/scratch/cscs/$USER/multilingual_data_mixture/eval_results
+#     push_details_to_hub: false
+#     push_results_to_hub: false
+#     push_results_to_tensorboard: true
+#     tensorboard_metric_prefix: eval_
+# wandb: null
+# parallelism:
+#   dp: 1
+#   pp: 1
+#   pp_engine: 1f1b
+#   tp: 1
+#   tp_linear_async_communication: false
+#   tp_mode: ALL_REDUCE
+# tasks:
+#   custom_tasks: /capstor/scratch/cscs/$USER/lighteval-multilingual/src/lighteval/community_tasks/multilingual/configs/multilingual.py
+#   dataset_loading_processes: 1
+#   max_samples: 10
+#   multichoice_continuations_start_space: null
+#   no_multichoice_continuations_start_space: null
+#   num_fewshot_seeds: 1
+#   tasks: x_nli
+#   langs: en,fr

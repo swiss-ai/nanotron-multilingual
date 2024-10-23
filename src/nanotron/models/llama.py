@@ -14,7 +14,7 @@
 # limitations under the License.
 """PyTorch LLaMa model."""
 
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
 
 import torch
 from torch import nn
@@ -593,9 +593,9 @@ class LlamaDecoderLayer(nn.Module):
 
         self.post_attention_layernorm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = MLP(config=config, parallel_config=parallel_config, tp_pg=tp_pg)
-        
+
         self.recompute_layer = parallel_config.recompute_layer
-        
+
     def _core_forward(
         self,
         hidden_states: Union[torch.Tensor, TensorPointer],
@@ -614,12 +614,12 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = hidden_states + residual
 
         return hidden_states, output["sequence_mask"]
-        
+
     def _checkpointed_forward(
         self,
         hidden_states: torch.Tensor,
         sequence_mask: torch.Tensor,
-        ) -> List[torch.Tensor]:
+    ) -> List[torch.Tensor]:
         return CheckpointFunction.apply(self._core_forward, True, hidden_states, sequence_mask)
 
     def forward(
@@ -627,7 +627,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states: Union[torch.Tensor, TensorPointer],
         sequence_mask: Union[torch.Tensor, TensorPointer],
     ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
-        
+
         if self.recompute_layer and not isinstance(hidden_states, TensorPointer):
             hidden_states, sequence_mask = self._checkpointed_forward(hidden_states, sequence_mask)
         else:
@@ -637,6 +637,7 @@ class LlamaDecoderLayer(nn.Module):
             "hidden_states": hidden_states,
             "sequence_mask": sequence_mask,
         }
+
 
 class Embedding(nn.Module, AttachableStore):
     def __init__(self, tp_pg: dist.ProcessGroup, config: LlamaConfig, parallel_config: Optional[ParallelismArgs]):
@@ -758,7 +759,9 @@ class LlamaModel(nn.Module):
         input_ids: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
         input_mask: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
         lang_code: Union[torch.Tensor, TensorPointer]=None,  # [batch_size, 1]
+        lang_code: Union[torch.Tensor, TensorPointer],  # [batch_size, 1]
     ):
+        return self.forward_with_hidden_states(input_ids=input_ids, input_mask=input_mask, lang_code=lang_code)[0]
         return self.forward_with_hidden_states(input_ids=input_ids, input_mask=input_mask, lang_code=lang_code)[0]
 
     def forward_with_hidden_states(
@@ -766,7 +769,12 @@ class LlamaModel(nn.Module):
         input_ids: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
         input_mask: Union[torch.Tensor, TensorPointer],  # [batch_size, seq_length]
         lang_code: Union[torch.Tensor, TensorPointer],  # [batch_size, 1]
+        lang_code: Union[torch.Tensor, TensorPointer],  # [batch_size, 1]
     ):
+        # NOTE(tj.solergibert) I bring `lang_code` till the forward of LlamaModel. Remember that
+        # to use it in the different pipeline blocks you need to also set the module_input_keys & module_output_keys
+        # of the necessary `PipelineBlock`'s defined in the LlamaModel init!
+
         # NOTE(tj.solergibert) I bring `lang_code` till the forward of LlamaModel. Remember that
         # to use it in the different pipeline blocks you need to also set the module_input_keys & module_output_keys
         # of the necessary `PipelineBlock`'s defined in the LlamaModel init!
@@ -851,9 +859,18 @@ class Loss(nn.Module):
         # https://github.com/NVIDIA/Megatron-LM/blob/f267e6186eae1d6e2055b412b00e2e545a8e896a/megatron/model/gpt_model.py#L38
 
         sample_loss = sharded_cross_entropy(
+        sample_loss = sharded_cross_entropy(
             sharded_logits, label_ids.transpose(0, 1).contiguous(), group=self.tp_pg, dtype=torch.float
         ).transpose(0, 1)
         # TODO @thomasw21: It's unclear what kind of normalization we want to do.
+        sample_loss = masked_mean(sample_loss, label_mask, dtype=torch.float)
+        # NOTE(tj.solergibert) masked_mean returns a single scalar with the batch loss. We've changed it to compute the SAMPLE loss.
+        # We will continue using "loss" as the batch loss but we add "sample_loss" for the multilingual effort.
+        # WARN(tj.solergibert) Don't panic, the batch loss used to update the parameters is computed in `LlamaForTraining`
+
+        # TODO @thomasw21: I think indexing causes a sync we don't actually want
+        # TODO @thomasw21: loss = loss[label_mask].sum()
+        return {"sample_loss": sample_loss}
         sample_loss = masked_mean(sample_loss, label_mask, dtype=torch.float)
         # NOTE(tj.solergibert) masked_mean returns a single scalar with the batch loss. We've changed it to compute the SAMPLE loss.
         # We will continue using "loss" as the batch loss but we add "sample_loss" for the multilingual effort.

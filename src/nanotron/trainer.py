@@ -57,6 +57,7 @@ from nanotron.logging import (
 from nanotron.models import NanotronModel, build_model
 from nanotron.models.base import check_model_has_grad
 from nanotron.models.gpt3 import GPT3ForTraining
+from nanotron.models.gpt3_moe import GPT3MoEForTraining
 from nanotron.models.llama import LlamaForTraining, RotaryEmbedding
 from nanotron.models.starcoder2 import Starcoder2ForTraining
 from nanotron.optim.clip_grads import clip_grad_norm
@@ -106,6 +107,7 @@ CONFIG_TO_MODEL_CLASS = {
     "LlamaConfig": LlamaForTraining,
     "Starcoder2Config": Starcoder2ForTraining,
     "GPT3Config": GPT3ForTraining,
+    "GPT3MoEConfig": GPT3MoEForTraining,
 }
 
 try:
@@ -342,7 +344,7 @@ class DistributedTrainer:
             else:
                 dataloader = dataloaders
 
-            self.current_validation_dataloader_lenght = len(dataloader)
+            self.current_validation_dataloader_length = min(len(dataloader), self.limit_val_batches)
             self.current_validation_dataloader = sanity_check_dataloader(
                 dataloader=dataloader, parallel_context=self.parallel_context, config=self.config
             )
@@ -403,7 +405,7 @@ class DistributedTrainer:
             dataloader = dataloader() if callable(dataloader) else dataloader
             break
 
-        self.current_validation_dataloader_lenght = len(dataloader)
+        self.current_validation_dataloader_length = min(len(dataloader), self.limit_val_batches)
         self.current_validation_dataloader = sanity_check_dataloader(
             dataloader=dataloader, parallel_context=self.parallel_context, config=self.config
         )  # NOTE(tj.solergibert) Create a Iterator from the DataLoader
@@ -579,7 +581,7 @@ class DistributedTrainer:
 
     def training_step(
         self, dataloader: Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]]
-    ) -> Tuple[Iterable[Dict], Optional[torch.Tensor]]:
+    ) -> Tuple[Iterable[Dict], Optional[Dict[str, torch.Tensor]]]:
         before_tbi_sanity_checks(self.config, self.parallel_context, self.unwrapped_model, self.grad_accumulator)
 
         if self.iteration_step < 5:
@@ -646,11 +648,21 @@ class DistributedTrainer:
         # Compute DP average loss and overlap with optimizer step
         if isinstance(outputs[0]["loss"], torch.Tensor):
             # This is an average on only one data rank.
-            loss_avg = torch.stack(
-                [output["loss"] for output in outputs]
-            ).sum()  # already divided by n_micro_batches_per_batch
-            # sync loss across DP
-            handle = dist.all_reduce(loss_avg, group=self.parallel_context.dp_pg, async_op=True, op=dist.ReduceOp.AVG)
+            loss_avg = {}
+            for k in outputs[0].keys():
+                if k == "sample_loss":
+                    continue  # sample loss is the individual losses, is already averaged as 'lm_loss'
+                if k == "loss":
+                    loss_avg["lm_loss"] = torch.stack([output[k] for output in outputs]).sum()
+                    k = "lm_loss"
+                else:
+                    loss_avg[k] = torch.stack([output[k] for output in outputs]).mean()
+                handle = dist.all_reduce(
+                    loss_avg[k],
+                    group=self.parallel_context.dp_pg,
+                    async_op=True,
+                    op=dist.ReduceOp.AVG,
+                )
         else:
             loss_avg = None
             handle = None
@@ -674,8 +686,8 @@ class DistributedTrainer:
     def validation_step(self, dataloader: Iterator[Dict[str, Union[torch.Tensor, TensorPointer]]]) -> Iterable[Dict]:
         outputs, lang_codes = self.pipeline_engine.validate_batch_iter(
             model=self.model,
-            batch=(next(dataloader) for _ in range(self.current_validation_dataloader_lenght)),
-            nb_microbatches=self.current_validation_dataloader_lenght,
+            batch=(next(dataloader) for _ in range(self.current_validation_dataloader_length)),
+            nb_microbatches=self.current_validation_dataloader_length,
         )
 
         lang_losses = {
@@ -684,7 +696,7 @@ class DistributedTrainer:
         lang_losses_list = list(lang_losses.keys())
 
         # Compute losses
-        if isinstance(outputs[0], torch.Tensor):
+        if len(outputs) > 0 and isinstance(outputs[0], torch.Tensor):
             # Multilingual losses
             for loss, lang_code in zip(outputs, lang_codes):
                 lang_losses[lang_losses_list[lang_code]].append(loss)
@@ -728,9 +740,9 @@ class DistributedTrainer:
 
     def train_step_logs(
         self,
-        loss_avg: Optional[torch.Tensor],
-        global_loss: torch.Tensor,
-        lang_losses: torch.Tensor,
+        loss_avg: Optional[Dict[str, torch.Tensor]],
+        global_loss: Optional[torch.Tensor],
+        lang_losses: Optional[Dict[str, torch.Tensor]],
     ) -> None:
         # TODO @nouamanetazi: Megatron-LM seems to be using a barrier to report their interval time. Check if this is necessary. https://github.com/NouamaneTazi/Megatron-LM/blob/e241a96c3085b18e36c6cee1d68a8155de77b5a6/megatron/training.py#L607
         dist.barrier()
@@ -748,7 +760,7 @@ class DistributedTrainer:
 
         # Validation metrics
         if global_loss is not None:
-            validation_total_samples = self.current_validation_dataloader_lenght * self.micro_batch_size
+            validation_total_samples = self.current_validation_dataloader_length * self.micro_batch_size
             validation_elapsed_time_per_iteration_ms = (self.validation_step_time - self.training_step_time) * 1000
             validation_tokens_per_sec = (
                 validation_total_samples * self.sequence_length / (validation_elapsed_time_per_iteration_ms / 1000)
@@ -778,11 +790,14 @@ class DistributedTrainer:
                     "tokens_per_sec_per_gpu", tokens_per_sec / self.parallel_context.world_pg.size(), "human_format"
                 ),  # , "1.6E"),
                 LogItem("global_batch_size", self.global_batch_size, "human_format"),  # , "5d"),
-                LogItem("lm_loss", loss_avg.item(), "human_format"),  # , "1.6E"),
                 LogItem("lr", lr, "human_format"),  # , ".3E"),
                 LogItem("model_tflops_per_gpu", model_tflops, "human_format"),  # , ".2f"),
                 LogItem("hardware_tflops_per_gpu", hardware_tflops, "human_format"),  # , ".2f"),
             ]
+
+            if loss_avg is not None:
+                for k, v in loss_avg.items():
+                    log_entries.append(LogItem(k, v.item(), "human_format"))
 
             if self.config.optimizer.clip_grad is not None:
                 log_entries.append(LogItem("grad_norm", self.grad_norm_unclipped.item(), "human_format"))  # , ".3f"))
