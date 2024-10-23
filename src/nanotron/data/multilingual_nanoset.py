@@ -38,7 +38,9 @@ class MultilingualNanoset(torch.utils.data.Dataset):
 
         # Checks
         if isinstance(dataset_folders, str):
-            warnings.warn("dataset_folders should be of type List[str] but str was provided. Converting to List[str]")
+            warnings.warn(
+                "dataset_folders should be of type List[str] but str was provided. Converting to List[str]"
+            )
             dataset_folders = [dataset_folders]
 
         # Init
@@ -63,7 +65,9 @@ class MultilingualNanoset(torch.utils.data.Dataset):
 
         # Build Nanoset Index
         ## To build the index we need the length of each dataset
-        self.dataset_lengths = [len(datatrove_dataset) for datatrove_dataset in self.datatrove_datasets]
+        self.dataset_lengths = [
+            len(datatrove_dataset) for datatrove_dataset in self.datatrove_datasets
+        ]
         ## Set dataset weights
         if (
             dataset_weights is None
@@ -76,10 +80,14 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         ), f"Specified {len(self.dataset_weights)} weights but {len(dataset_folders)} datasets were provided."
         ## Build dataset index and dataset sample index
         if is_valid:  # Valid MultilingualNanoset
-            self.dataset_index, self.dataset_sample_index = build_valid_nanoset_index(self.dataset_lengths)
+            self.dataset_index, self.dataset_sample_index = build_valid_nanoset_index(
+                self.dataset_lengths
+            )
 
         else:  # Train MultilingualNanoset
-            self.dataset_index, self.dataset_sample_index = self.build_train_nanoset_index()
+            self.dataset_index, self.dataset_sample_index = (
+                self.build_train_nanoset_index()
+            )
 
         self.print_nanoset_info()
 
@@ -129,7 +137,9 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         numpy_random_state.shuffle(dataset_sample_index)
         # Concatenate num_epochs the shuffled indexes
         dataset_index = np.concatenate([dataset_index for _ in range(num_epochs)])
-        dataset_sample_index = np.concatenate([dataset_sample_index for _ in range(num_epochs)])
+        dataset_sample_index = np.concatenate(
+            [dataset_sample_index for _ in range(num_epochs)]
+        )
         # Just keep the necessary samples
         dataset_index = dataset_index[: self.train_split_num_samples]
         dataset_sample_index = dataset_sample_index[: self.train_split_num_samples]
@@ -152,7 +162,9 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         )
 
         # Print samples from each dataset + weight
-        dataset_sample_count = count_dataset_indexes(self.dataset_index, len(self.dataset_folders))
+        dataset_sample_count = count_dataset_indexes(
+            self.dataset_index, len(self.dataset_folders)
+        )
         for index, sample_count in enumerate(dataset_sample_count):
             log_rank(
                 f">   Total number of {'validation' if self.is_valid else 'training'} samples from the {self.dataset_folders[index]} dataset: {sample_count} ({round(normalize(dataset_sample_count).tolist()[index], 2)})",
@@ -174,7 +186,9 @@ def build_train_nanoset_index_helper(
     """
     # Create empty arrays for dataset indices and dataset sample indices
     dataset_index = np.empty((n_samples,), dtype="uint")
-    dataset_sample_index = np.empty((n_samples,), dtype="long")  # Supports dataset with up to 2**64 samples
+    dataset_sample_index = np.empty(
+        (n_samples,), dtype="long"
+    )  # Supports dataset with up to 2**64 samples
 
     # Initialize buffer for number of samples used for each dataset
     current_samples = np.zeros((len(weights),), dtype="long")
@@ -191,7 +205,9 @@ def build_train_nanoset_index_helper(
 
         # Assign the dataset index and update the sample index
         dataset_index[sample_idx] = max_error_index
-        dataset_sample_index[sample_idx] = current_samples[max_error_index] % dataset_sizes[max_error_index]
+        dataset_sample_index[sample_idx] = (
+            current_samples[max_error_index] % dataset_sizes[max_error_index]
+        )
 
         # Update the total samples for the selected dataset
         current_samples[max_error_index] += 1
@@ -211,4 +227,6 @@ def build_valid_nanoset_index(dataset_lengths: List[int]) -> np.ndarray:
         dataset_index.extend([i] * length)
         dataset_sample_index.extend(range(length))
 
-    return np.array(dataset_index, dtype="uint"), np.array(dataset_sample_index, dtype="long")
+    return np.array(dataset_index, dtype="uint"), np.array(
+        dataset_sample_index, dtype="long"
+    )

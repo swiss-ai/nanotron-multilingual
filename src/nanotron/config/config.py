@@ -101,12 +101,16 @@ class NanosetDatasetsArgs:
     dataset_folder: Union[str, dict, List[str]]
 
     def __post_init__(self):
-        if isinstance(self.dataset_folder, str):  # Case 1: 1 Dataset file
+        if isinstance(self.dataset_folder, str):  # Case 1: 1 Dataset folder
             self.dataset_folder = [self.dataset_folder]
             self.dataset_weights = [1]
-        elif isinstance(self.dataset_folder, List):  # Case 2: > 1 Dataset file
-            self.dataset_weights = None  # Set to None so we consume all the samples randomly
-        elif isinstance(self.dataset_folder, dict):  # Case 3: dict with > 1 dataset_folder and weights
+        elif isinstance(self.dataset_folder, List):  # Case 2: > 1 Dataset folder
+            self.dataset_weights = (
+                None  # Set to None so we consume all the samples randomly
+            )
+        elif isinstance(
+            self.dataset_folder, dict
+        ):  # Case 3: dict with > 1 dataset_folder and weights
             tmp_dataset_folder = self.dataset_folder.copy()
             self.dataset_folder = list(tmp_dataset_folder.keys())
             self.dataset_weights = list(tmp_dataset_folder.values())
@@ -116,7 +120,9 @@ class NanosetDatasetsArgs:
 class MultilingualNanosetDatasetsArgs:
     training_folder: Union[str, dict, List[str]]
     validation_folder: Union[str, List[str]]
-    languages: List[str]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
+    languages: List[
+        str
+    ]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
 
     def __post_init__(self):
         if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
@@ -124,8 +130,45 @@ class MultilingualNanosetDatasetsArgs:
             self.validation_folder = [self.validation_folder]
             self.dataset_weights = [1]
         elif isinstance(self.training_folder, List):  # Case 2: > 1 Dataset folder
-            self.dataset_weights = None  # Set to None so we consume all the samples randomly
-        elif isinstance(self.training_folder, dict):  # Case 3: dict with > 1 training_folder and weights
+            self.dataset_weights = (
+                None  # Set to None so we consume all the samples randomly
+            )
+        elif isinstance(
+            self.training_folder, dict
+        ):  # Case 3: dict with > 1 training_folder and weights
+            tmp_training_folder = self.training_folder.copy()
+            self.training_folder = list(tmp_training_folder.keys())
+            self.dataset_weights = list(tmp_training_folder.values())
+
+        assert len(self.training_folder) == len(
+            self.languages
+        ), f"The sizes of training_folder and languages mismatch ({len(self.training_folder)} vs {len(self.languages)})"
+
+        assert len(self.training_folder) == len(
+            self.validation_folder
+        ), f"The sizes of training_folder and validation_folder mismatch ({len(self.training_folder)} vs {len(self.validation_folder)})"
+
+
+@dataclass
+class MultilingualNanosetDatasetsArgs:
+    training_folder: Union[str, dict, List[str]]
+    validation_folder: Union[str, List[str]]
+    languages: List[
+        str
+    ]  # NOTE(tj.solergibert) Required for 1. Aggregating the result 2. Reporting to WANDB
+
+    def __post_init__(self):
+        if isinstance(self.training_folder, str):  # Case 1: 1 Dataset folder
+            self.training_folder = [self.training_folder]
+            self.validation_folder = [self.validation_folder]
+            self.dataset_weights = [1]
+        elif isinstance(self.training_folder, List):  # Case 2: > 1 Dataset folder
+            self.dataset_weights = (
+                None  # Set to None so we consume all the samples randomly
+            )
+        elif isinstance(
+            self.training_folder, dict
+        ):  # Case 3: dict with > 1 training_folder and weights
             tmp_training_folder = self.training_folder.copy()
             self.training_folder = list(tmp_training_folder.keys())
             self.dataset_weights = list(tmp_training_folder.values())
@@ -167,7 +210,9 @@ class DatasetStageArgs:
 
     def __post_init__(self):
         if self.start_training_step < 0:
-            raise ValueError(f"training_steps should be a positive integer and not {self.start_training_step}")
+            raise ValueError(
+                f"training_steps should be a positive integer and not {self.start_training_step}"
+            )
 
 
 @dataclass
@@ -182,6 +227,7 @@ class CheckpointsArgs:
     checkpoints_path: Path
     checkpoint_interval: int
     save_initial_state: Optional[bool] = False
+    save_final_state: Optional[bool] = False
     resume_checkpoint_path: Optional[Path] = None
     checkpoints_path_is_shared_file_system: Optional[bool] = False
 
@@ -387,13 +433,19 @@ class Config:
         if self.profiler is not None and self.profiler.profiler_export_path is not None:
             assert self.tokens.train_steps < 10
 
-        if self.optimizer is not None and self.optimizer.learning_rate_scheduler.lr_decay_steps is None:
+        if (
+            self.optimizer is not None
+            and self.optimizer.learning_rate_scheduler.lr_decay_steps is None
+        ):
             self.optimizer.learning_rate_scheduler.lr_decay_steps = (
-                self.tokens.train_steps - self.optimizer.learning_rate_scheduler.lr_warmup_steps
+                self.tokens.train_steps
+                - self.optimizer.learning_rate_scheduler.lr_warmup_steps
             )
 
         if self.data_stages is not None:
-            self.data_stages = sorted(self.data_stages, key=lambda stage: stage.start_training_step)
+            self.data_stages = sorted(
+                self.data_stages, key=lambda stage: stage.start_training_step
+            )
             names = [stage.name for stage in self.data_stages]
             training_steps = [stage.start_training_step for stage in self.data_stages]
             assert any(
@@ -402,7 +454,9 @@ class Config:
 
             for stage in self.data_stages:
                 if names.count(stage.name) > 1:
-                    raise ValueError(f"Each stage should have unique names and not {names}")
+                    raise ValueError(
+                        f"Each stage should have unique names and not {names}"
+                    )
 
                 if training_steps.count(stage.start_training_step) > 1:
                     raise ValueError(
@@ -411,13 +465,29 @@ class Config:
 
             # NOTE: must order the stages by start_training_step from lowest to highest
             assert all(
-                self.data_stages[i].start_training_step < self.data_stages[i + 1].start_training_step
+                self.data_stages[i].start_training_step
+                < self.data_stages[i + 1].start_training_step
                 for i in range(len(self.data_stages) - 1)
             ), "The stages are not sorted by start_training_step in increasing order"
 
         # NOTE(tj.solergibert) As we are reporting the training & validation metrics together, we
         # must comply with val_check_interval % iteration_step_info_interval = 0
-        if not self.tokens.val_check_interval % self.logging.iteration_step_info_interval == 0:
+        if (
+            not self.tokens.val_check_interval
+            % self.logging.iteration_step_info_interval
+            == 0
+        ):
+            raise ValueError(
+                f"It is necessary to run the validation stage during a logging step. Validation interval: {self.tokens.val_check_interval}, Logging interval: {self.logging.iteration_step_info_interval}"
+            )
+
+        # NOTE(tj.solergibert) As we are reporting the training & validation metrics together, we
+        # must comply with val_check_interval % iteration_step_info_interval = 0
+        if (
+            not self.tokens.val_check_interval
+            % self.logging.iteration_step_info_interval
+            == 0
+        ):
             raise ValueError(
                 f"It is necessary to run the validation stage during a logging step. Validation interval: {self.tokens.val_check_interval}, Logging interval: {self.logging.iteration_step_info_interval}"
             )
@@ -428,7 +498,11 @@ class Config:
 
     @property
     def global_batch_size(self):
-        return self.tokens.micro_batch_size * self.tokens.batch_accumulation_per_replica * self.parallelism.dp
+        return (
+            self.tokens.micro_batch_size
+            * self.tokens.batch_accumulation_per_replica
+            * self.parallelism.dp
+        )
 
     def save_as_yaml(self, file_path: str):
         config_dict = serialize(self)
@@ -460,12 +534,18 @@ def get_config_from_dict(
     if skip_unused_config_keys:
         logger.warning("skip_unused_config_keys set")
         config_dict = {
-            field.name: config_dict[field.name] for field in fields(config_class) if field.name in config_dict
+            field.name: config_dict[field.name]
+            for field in fields(config_class)
+            if field.name in config_dict
         }
     if skip_null_keys:
         logger.warning("Skip_null_keys set")
         config_dict = {
-            k: ({kk: vv for kk, vv in v.items() if vv is not None} if isinstance(v, dict) else v)
+            k: (
+                {kk: vv for kk, vv in v.items() if vv is not None}
+                if isinstance(v, dict)
+                else v
+            )
             for k, v in config_dict.items()
             if v is not None
         }

@@ -112,6 +112,7 @@ def main(args):
                 shuffle=False,
                 tokenizer_name_or_path=args.tokenizer_name_or_path,
                 eos_token=args.eos_token,
+                shuffle=False,
                 max_tokens_per_file=1e9,
             ),
         ],

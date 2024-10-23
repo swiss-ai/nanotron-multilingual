@@ -51,6 +51,7 @@ class LightEvalLoggingArgs:
 class LightEvalTasksArgs:
     """Arguments related to tasks for LightEval"""
 
+    langs: Optional[str] = None
     tasks: Optional[str] = None
     custom_tasks: Optional[str] = None
     max_samples: Optional[int] = None
