@@ -679,7 +679,7 @@ class DistributedTrainer:
         )
 
         lang_losses = {
-            lang: [] for lang in self.config.data_stages[self.metadata.last_stage_idx].data.dataset.languages
+            lang: [] for lang in self.config.data_stages[self.metadata.last_stage_idx].data.dataset.domains
         }
         lang_losses_list = list(lang_losses.keys())
 
