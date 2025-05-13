@@ -50,36 +50,45 @@ class MultilingualNanoset(torch.utils.data.Dataset):
         self.random_seed = random_seed
         self.datatrove_datasets = []
         for dataset_folder in self.dataset_folders:
-            self.datatrove_datasets.append(
-                DatatroveFolderDataset(
-                    folder_path=dataset_folder,
-                    filename_pattern=os.path.join(dataset_folder, "*.ds"),
-                    seq_len=sequence_length,
-                    recursive=False,
-                    token_size=token_size,
-                    shuffle=True,
+            filename_pattern = "*.ds" if is_valid else "*0_unshuffled.ds" 
+            try:
+                self.datatrove_datasets.append(
+                    DatatroveFolderDataset(
+                        folder_path=dataset_folder,
+                        filename_pattern=os.path.join(dataset_folder, filename_pattern),
+                        seq_len=sequence_length,
+                        recursive=False,
+                        token_size=token_size,
+                        shuffle=False,
+                    )
                 )
-            )
+            except FileNotFoundError:
+                warnings.warn(f"Dataset folder {dataset_folder} does not contain any .ds files. Skipping it.")
+                self.datatrove_datasets.append([])
 
         # Build Nanoset Index
         ## To build the index we need the length of each dataset
         self.dataset_lengths = [len(datatrove_dataset) for datatrove_dataset in self.datatrove_datasets]
         ## Set dataset weights
-        if (
-            dataset_weights is None
-        ):  # Case of training with > 1 datasets without weighting them: Consume both datasets entirely on each epoch
+        if (dataset_weights is None):  # Case of training with > 1 datasets without weighting them: Consume both datasets entirely on each epoch
             self.dataset_weights = normalize(self.dataset_lengths)
         else:
-            self.dataset_weights = normalize(dataset_weights)
-        assert len(dataset_folders) == len(
-            self.dataset_weights
-        ), f"Specified {len(self.dataset_weights)} weights but {len(dataset_folders)} datasets were provided."
+            # Assign 0 weight to datasets with 0 samples
+            self.dataset_weights = MultilingualNanoset.correct_weights_for_empty_datasets(np.array(dataset_weights), np.array(self.dataset_lengths))
+ 
+        ## Check for empty datasets
+        #assert not any(np.array(self.dataset_lengths) == 0), f"Dataset with 0 samples detected: {np.array(self.dataset_folders)[np.array(self.dataset_lengths) == 0]}. Please remove it from the dataset_folders list."
+        ## Check for weights
+        assert len(dataset_folders) == len(self.dataset_weights), f"Specified {len(self.dataset_weights)} weights but {len(dataset_folders)} datasets were provided."
+        
         ## Build dataset index and dataset sample index
         if is_valid:  # Valid MultilingualNanoset
             self.dataset_index, self.dataset_sample_index = build_valid_nanoset_index(self.dataset_lengths)
-
         else:  # Train MultilingualNanoset
             self.dataset_index, self.dataset_sample_index = self.build_train_nanoset_index()
+
+        # Log Nanoset info
+        logger.info(f"Dataset created!")
 
         self.print_nanoset_info()
 
@@ -159,6 +168,19 @@ class MultilingualNanoset(torch.utils.data.Dataset):
                 rank=0,
             )
 
+    @staticmethod
+    def correct_weights_for_empty_datasets(dataset_weights: np.ndarray, dataset_lengths: np.ndarray) -> List[float]:
+        """
+        Corrects the weights for empty datasets
+
+        Args:
+            dataset_weights (np.ndarray): The dataset weights
+
+        Returns:
+            List[float]: The corrected dataset weights
+        """
+        dataset_weights[dataset_lengths == 0] = 0.0
+        return normalize(dataset_weights.tolist())
 
 @jit(nopython=True, cache=True)
 def build_train_nanoset_index_helper(
@@ -185,6 +207,13 @@ def build_train_nanoset_index_helper(
 
         # Find the dataset with the highest error
         errors = weights * sample_idx_float - current_samples
+
+        # Set the error of empty datasets to -1 to avoid selecting them
+        for i in range(len(dataset_sizes)):
+            if dataset_sizes[i] == 0:
+                errors[i] = -1
+
+        # Select the dataset with the highest error
         max_error_index = np.argmax(errors)
 
         # Assign the dataset index and update the sample index
