@@ -67,7 +67,9 @@ class LightEvalTasksArgs:
             self.tasks = Path(self.tasks)
             if self.tasks.exists():
                 with open(self.tasks, 'r') as f:
-                    self.tasks = ','.join([line.strip() for line in f if line.strip()])    
+                    self.tasks = ','.join([line.strip() for line in f if line.strip()]) 
+            else:
+                self.tasks = str(self.tasks)   
 
 @dataclass
 class LightEvalWandbLoggerConfig:
