@@ -61,6 +61,13 @@ class LightEvalTasksArgs:
     multichoice_continuations_start_space: Optional[bool] = None
     no_multichoice_continuations_start_space: Optional[bool] = None
 
+    def __post_init__(self):
+        # if tasks is a path, we assume it is a .txt file with one task per line else we keep it as a string
+        if isinstance(self.tasks, str):
+            self.tasks = Path(self.tasks)
+            if self.tasks.exists():
+                with open(self.tasks, 'r') as f:
+                    self.tasks = ','.join([line.strip() for line in f if line.strip()])    
 
 @dataclass
 class LightEvalWandbLoggerConfig:
